@@ -19,6 +19,13 @@ authentication. D1 and R2 bindings are required for shared storage and uploads.
 
 ## Development
 
+For Codex Cloud setup, start with [the Cloud guide](docs/CODEX_CLOUD.md).
+Development and acceptance are described in [the workflow guide](docs/DEVELOPMENT_AND_ACCEPTANCE.md);
+Codex's repository instructions are in [AGENTS.md](AGENTS.md).
+These guides take precedence over legacy Sites installer examples below for
+a standalone GitHub clone. This is a pnpm project with no npm lockfile: use the
+pinned pnpm and `pnpm install --frozen-lockfile --prod=false`, not `npm ci`.
+
 A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
 
 ## Prerequisites
@@ -36,7 +43,7 @@ Whenever reopening or moving a checkout, run `node <plugin-root>/scripts/configu
 
 This starter does not use `wrangler.jsonc`.
 
-`install:ci` runs `npm ci` once against the shared lockfile, disables parent-workspace discovery, and includes required dev/optional dependencies despite production/omit settings. Sharp defaults to prebuilt binaries unless explicitly configured otherwise. Do not overlap installers.
+`install:ci` invokes `scripts/install-pnpm.sh`, the Sites Linux installer. It requires Sites environment configuration and the pinned pnpm; it does not run `npm ci`. For a standalone Cloud clone, use the Cloud guide above. Do not overlap installers.
 
 - **Portable:** Preserve host HOME, npm cache, registry, proxy, temporary paths, retry/concurrency settings, and lifecycle-script policy. Use `--prefer-offline --no-audit --no-fund`.
 - **Managed Linux:** Use the existing project-local HOME/cache/tmp setup and Linux install lock, tarball preflight, and timeout. Restore the image-seeded npm cache only when its lockfile hash matches; retain network fallback. Builds keep their existing timeout. These helpers are not invoked by the portable profile.
@@ -62,7 +69,7 @@ Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=tru
 - `.openai/hosting.json` declares optional Sites D1 and R2 bindings
 - `vite.config.ts` simulates declared bindings for local development
 - `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
+- `db/schema.ts` declares the trip state table
 - `@cloudflare/workers-types` provides Worker types; `cloudflare-env.d.ts` declares optional `DB`/`BUCKET` bindings—update these declarations if binding names change
 - `examples/d1/` contains an optional D1 example surface
 - `drizzle.config.ts` supports local migration generation when needed
