@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { tripStates } from "@/db/schema";
 import { initialTripState, type TripState } from "@/lib/trip-data";
 import { INVITE_TOKEN } from "@/lib/trip-secret";
+import { findChangedScheduleConflicts, validScheduleRange } from "@/lib/schedule-conflicts";
 
 const TRIP_ID = "demo-trip";
 
@@ -52,23 +53,29 @@ export async function PUT(request: Request) {
     }
 
     const db = getDb();
-    const nextRevision = Math.max(1, Number(body.revision ?? 0) + 1);
-    await db
-      .insert(tripStates)
-      .values({
+    const [existing] = await db.select().from(tripStates).where(eq(tripStates.tripId, TRIP_ID)).limit(1);
+    if (!Number.isInteger(body.revision) || body.revision !== (existing?.revision ?? 0)) {
+      return Response.json({ error: "其他團友已更新行程，已重新載入，請再試一次", code: "stale_revision" }, { status: 409 });
+    }
+    const previous = existing ? JSON.parse(existing.payload) as TripState : initialTripState;
+    if (body.state.itinerary.some((item) => !validScheduleRange(item, body.state!.trip))) {
+      return Response.json({ error: "活動的開始及結束日期／時間不正確，或超出旅程範圍" }, { status: 400 });
+    }
+    const conflicts = findChangedScheduleConflicts(previous.itinerary, body.state.itinerary);
+    if (conflicts.length) {
+      return Response.json({ error: "同行成員已有重疊活動，請先調整日期、時間或成員", code: "schedule_conflict", conflicts }, { status: 409 });
+    }
+    const nextRevision = (existing?.revision ?? 0) + 1;
+    const values = {
         tripId: TRIP_ID,
         payload: JSON.stringify(body.state),
         revision: nextRevision,
         updatedAt: new Date().toISOString(),
-      })
-      .onConflictDoUpdate({
-        target: tripStates.tripId,
-        set: {
-          payload: JSON.stringify(body.state),
-          revision: nextRevision,
-          updatedAt: new Date().toISOString(),
-        },
-      });
+    };
+    const written = existing
+      ? await db.update(tripStates).set(values).where(and(eq(tripStates.tripId, TRIP_ID), eq(tripStates.revision, existing.revision))).returning({ revision: tripStates.revision })
+      : await db.insert(tripStates).values(values).onConflictDoNothing().returning({ revision: tripStates.revision });
+    if (!written.length) return Response.json({ error: "其他團友剛更新了行程，已重新載入，請再試一次", code: "stale_revision" }, { status: 409 });
 
     return Response.json({ ok: true, revision: nextRevision });
   } catch {

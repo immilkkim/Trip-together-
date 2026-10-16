@@ -11,6 +11,7 @@ export type ItineraryItem = {
   date: string;
   time: string;
   endTime: string;
+  endDate?: string;
   title: string;
   place: string;
   transport: string;
@@ -40,6 +41,7 @@ export type Activity = {
   imageSourceUrl: string;
   createdBy?: string;
   proposedDate?: string;
+  proposedEndDate?: string;
   startTime?: string;
   endTime?: string;
 };
@@ -50,6 +52,7 @@ export type Proposal = {
   votes: Record<string, "yes" | "maybe" | "no">;
   status: "voting" | "published";
   date?: string;
+  endDate?: string;
   time?: string;
   endTime?: string;
   publishedItineraryId?: string;
@@ -62,6 +65,7 @@ export type TripState = {
     destination: string;
     startDate: string;
     endDate: string;
+    timeZone?: string;
   };
   members: Member[];
   itinerary: ItineraryItem[];

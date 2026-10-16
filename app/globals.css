@@ -135,8 +135,22 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .timeline-hour-label span { border-top:1px solid #e3e8ef; }
 .timeline-canvas { position:absolute; left:62px; right:0; top:0; overflow:hidden; border-left:1px solid #e3e8ef; background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 47px,#f2f5f8 47px,#f2f5f8 48px,transparent 48px,transparent 95px,#e3e8ef 95px,#e3e8ef 96px); }
 .timeline-position { position:absolute; z-index:2; padding:3px 6px 3px 5px; }
-.timeline-card { height:100%; min-width:0; overflow:hidden; border:1px solid transparent; border-radius:16px; padding:12px 13px; box-shadow:0 5px 14px rgba(23,32,51,.06); }
-.timeline-card.is-compact { padding:6px 9px; border-radius:12px; }
+.timeline-card { display:block; height:100%; min-width:0; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; border:1px solid transparent; border-radius:16px; padding:12px 13px; box-shadow:0 5px 14px rgba(23,32,51,.06); cursor:pointer; }
+.timeline-card-open { display:flex; flex-direction:column; align-items:stretch; gap:6px; width:100%; min-width:0; padding:0; border:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.timeline-card-open:focus-visible { outline:2px solid currentColor; outline-offset:-2px; border-radius:6px; }
+.timeline-card-time { display:block; line-height:16px; white-space:normal; overflow-wrap:anywhere; }
+.timeline-card-title { display:block; margin:0; line-height:18px; white-space:normal; overflow-wrap:anywhere; }
+.timeline-card-meta { display:flex; flex-direction:column; gap:4px; min-width:0; line-height:16px; }
+.timeline-card-meta > span { display:flex; align-items:flex-start; gap:4px; min-width:0; }
+.timeline-card-meta svg { flex:none; margin-top:2px; }
+.timeline-meta-value { min-width:0; overflow-wrap:anywhere; white-space:normal; }
+.timeline-card-members { display:flex; flex-wrap:wrap; align-items:flex-start; gap:4px; min-width:0; }
+.timeline-member { display:inline-flex; max-width:100%; align-items:center; gap:4px; border-radius:999px; background:rgba(255,255,255,.7); padding:2px 8px 2px 4px; font-size:12px; line-height:16px; font-weight:700; white-space:normal; overflow-wrap:anywhere; }
+.timeline-member i { width:12px; height:12px; flex:none; border-radius:50%; }
+.timeline-card.is-short { padding:6px 9px; }
+.timeline-card.is-short .timeline-card-open { gap:4px; }
+.timeline-card-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.timeline-card-actions .card-action { flex:none; width:28px; height:28px; }
 .card-action { display:grid; width:26px; height:26px; place-items:center; border-radius:8px; background:rgba(255,255,255,.72); color:currentColor; opacity:.72; }
 .card-action:hover { opacity:1; background:white; }
 .card-action svg { width:13px; height:13px; }
@@ -147,7 +161,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .timeline-empty button { margin-top:6px; color:#d95743; font-size:12px; font-weight:800; }
 .timeline-drop-label { position:absolute; right:12px; top:8px; z-index:1; color:#bec6d2; font-size:11px; font-weight:700; opacity:0; transition:opacity .15s ease; }
 .timeline-canvas:hover .timeline-drop-label { opacity:1; }
-.editor-input { width:100%; min-height:48px; border:1px solid #dfe5ee; border-radius:12px; background:white; padding:0 12px; color:#172033; font-size:14px; font-weight:500; outline:none; transition:border-color .15s ease,box-shadow .15s ease; }
+.editor-input { box-sizing:border-box; display:block; width:100%; min-width:0; max-width:100%; min-height:48px; border:1px solid #dfe5ee; border-radius:12px; background:white; padding:0 12px; color:#172033; font-size:16px; font-weight:500; outline:none; transition:border-color .15s ease,box-shadow .15s ease; }
+.editor-input:is([type="date"],[type="time"]) { appearance:none; -webkit-appearance:none; height:48px; padding:11px 12px; line-height:24px; overflow:hidden; }
+.editor-input::-webkit-date-and-time-value { min-width:0; margin:0; padding:0; line-height:24px; text-align:left; }
+.editor-input::-webkit-datetime-edit { display:inline-flex; align-items:center; padding:0; line-height:24px; }
+.editor-input::-webkit-datetime-edit-fields-wrapper { padding:0; }
 .editor-input:focus { border-color:#ef6a54; box-shadow:0 0 0 3px rgba(239,106,84,.12); }
 .activity-basket-panel { position:sticky; top:92px; max-height:calc(100dvh - 120px); overflow:hidden; border:1px solid #dfe5ee; border-radius:22px; background:white; box-shadow:0 16px 44px rgba(23,32,51,.08); }
 .basket-activity { display:flex; gap:10px; border:1px solid #e7ebf1; border-radius:16px; padding:9px; background:#fff; transition:.2s ease; }
