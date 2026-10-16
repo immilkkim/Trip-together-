@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   Check,
@@ -16,7 +16,6 @@ import {
   Menu,
   PanelRightOpen,
   Pencil,
-  Phone,
   Plus,
   Navigation,
   Search,
@@ -24,6 +23,7 @@ import {
   Sparkles,
   Trash2,
   Users,
+  UserPlus,
   Vote,
   X,
 } from "lucide-react";
@@ -46,6 +46,10 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { Checkbox } from "@/components/ui/checkbox";
+import { moveItineraryToBasket } from "@/lib/itinerary-actions";
+import { addCalendarDays, effectiveEndDate, findScheduleConflicts, itineraryForDay, scheduleRangeLabel, shiftEndDate, validScheduleRange, type DailyItineraryItem, type ScheduleConflict } from "@/lib/schedule-conflicts";
+import { defaultTripDate, tripLocalDate } from "@/lib/trip-date";
+import { createTripMember } from "@/lib/members";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -85,7 +89,7 @@ function tripDates(start: string, end: string) {
 }
 
 function memberInitial(name: string) {
-  return name.slice(0, 1);
+  return name.slice(0, 1).toLocaleUpperCase();
 }
 
 function normalizeState(value: TripState): TripState {
@@ -104,6 +108,7 @@ function normalizeState(value: TripState): TripState {
         date: proposal.date ?? activity?.proposedDate,
         time: proposal.time ?? activity?.startTime,
         endTime: proposal.endTime ?? activity?.endTime,
+        endDate: proposal.endDate ?? (!proposal.date || proposal.date === activity?.proposedDate ? activity?.proposedEndDate : undefined),
       };
     }),
   };
@@ -121,6 +126,9 @@ function minutesToTime(value: number) {
 
 type ItineraryDraft = {
   id?: string;
+  sourceActivityId?: string;
+  date: string;
+  endDate: string;
   title: string;
   startTime: string;
   endTime: string;
@@ -149,6 +157,7 @@ type ActivityDraft = {
   imageCredit: string;
   imageSourceUrl: string;
   proposedDate: string;
+  proposedEndDate: string;
   startTime: string;
   endTime: string;
   createdBy?: string;
@@ -171,9 +180,9 @@ type PositionedItem = {
   width: number;
 };
 
-function layoutTimelineItems(items: ItineraryItem[]): PositionedItem[] {
+function layoutTimelineItems(items: ItineraryItem[], timelineStart = TIMELINE_START): PositionedItem[] {
   const sorted = [...items]
-    .map((item) => ({ item, start: Math.max(timeToMinutes(item.time), TIMELINE_START), end: Math.min(timeToMinutes(item.endTime), TIMELINE_END) }))
+    .map((item) => ({ item, start: Math.max(timeToMinutes(item.time), timelineStart), end: Math.min(timeToMinutes(item.endTime), TIMELINE_END) }))
     .filter(({ start, end }) => end > start)
     .sort((a, b) => a.start - b.start || a.end - b.end);
   const positioned: PositionedItem[] = [];
@@ -196,7 +205,7 @@ function layoutTimelineItems(items: ItineraryItem[]): PositionedItem[] {
     const columnCount = Math.max(...assigned.map((entry) => entry.column)) + 1;
     assigned.forEach(({ item, start, end, column }) => positioned.push({
       item,
-      top: ((start - TIMELINE_START) / 60) * HOUR_HEIGHT,
+      top: ((start - timelineStart) / 60) * HOUR_HEIGHT,
       height: ((end - start) / 60) * HOUR_HEIGHT,
       left: (column / columnCount) * 100,
       width: 100 / columnCount,
@@ -216,36 +225,52 @@ function layoutTimelineItems(items: ItineraryItem[]): PositionedItem[] {
   return positioned;
 }
 
+function activityScheduleLabel(activity: Activity) {
+  return activity.proposedDate && activity.startTime && activity.endTime
+    ? scheduleRangeLabel({ date: activity.proposedDate, time: activity.startTime, endTime: activity.endTime, endDate: activity.proposedEndDate })
+    : "時間待定";
+}
+
 function statusLabel(status: ItineraryItem["status"]) {
   return status === "confirmed" ? "已確認" : "自由選擇";
 }
 
 export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?: string }) {
   const [state, setState] = useState<TripState>(initialTripState);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const savingRef = useRef(false);
   const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [memberId, setMemberId] = useState<string | null>(null);
   const [identityOpen, setIdentityOpen] = useState(false);
+  const [newMemberOpen, setNewMemberOpen] = useState(false);
+  const [newMemberName, setNewMemberName] = useState("");
   const [section, setSection] = useState<Section>("schedule");
-  const [selectedDate, setSelectedDate] = useState("2030-01-03");
+  const [selectedDate, setSelectedDate] = useState(initialTripState.trip.startDate);
   const [memberFilter, setMemberFilter] = useState("all");
   const [cityFilter, setCityFilter] = useState("全部");
   const [selectedActivity, setSelectedActivity] = useState<Activity | null>(null);
   const [inviteSelection, setInviteSelection] = useState<string[]>([]);
   const [invalidInvite, setInvalidInvite] = useState(false);
-  const [basketOpen, setBasketOpen] = useState(true);
+  const [basketOpen, setBasketOpen] = useState(false);
   const [itineraryDraft, setItineraryDraft] = useState<ItineraryDraft | null>(null);
+  const [detailItineraryId, setDetailItineraryId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ItineraryItem | null>(null);
+  const [returnToBasketOpen, setReturnToBasketOpen] = useState(false);
+  const [returnBasketCity, setReturnBasketCity] = useState<Activity["city"]>("悉尼");
   const [activityDraft, setActivityDraft] = useState<ActivityDraft | null>(null);
   const [activityPhoto, setActivityPhoto] = useState<File | null>(null);
   const [activityPhotoPreview, setActivityPhotoPreview] = useState("");
   const [activityDeleteTarget, setActivityDeleteTarget] = useState<Activity | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [proposalDate, setProposalDate] = useState(selectedDate);
+  const [proposalEndDate, setProposalEndDate] = useState("");
   const [proposalStart, setProposalStart] = useState("09:00");
   const [proposalEnd, setProposalEnd] = useState("11:00");
   const [pendingConflictVote, setPendingConflictVote] = useState<PendingConflictVote | null>(null);
+  const [scheduleConflicts, setScheduleConflicts] = useState<ScheduleConflict[]>([]);
   const [nameDraft, setNameDraft] = useState("");
 
   const inviteToken = useMemo(() => {
@@ -279,6 +304,12 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       setLoading(false);
       return;
     }
+    const loadTrip = (next: TripState) => {
+      const date = defaultTripDate(next.trip);
+      setState(next);
+      setSelectedDate(date);
+      setProposalDate(date);
+    };
     fetch("/api/state", { headers: { "x-trip-invite": inviteToken } })
       .then(async (response) => {
         if (response.status === 403) throw new Error("invalid");
@@ -287,7 +318,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       .then((data) => {
         if (data.state) {
           const normalized = normalizeState(data.state as TripState);
-          setState(normalized);
+          loadTrip(normalized);
           window.localStorage.setItem("trip-together-offline-state", JSON.stringify(normalized));
         }
         setRevision(data.revision ?? 0);
@@ -297,7 +328,9 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
         else {
           const cached = window.localStorage.getItem("trip-together-offline-state");
           if (cached) {
-            try { setState(normalizeState(JSON.parse(cached) as TripState)); } catch { /* ignore invalid cache */ }
+            try { loadTrip(normalizeState(JSON.parse(cached) as TripState)); } catch { loadTrip(initialTripState); }
+          } else {
+            loadTrip(initialTripState);
           }
         }
       })
@@ -305,7 +338,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
   }, [inviteToken]);
 
   const persist = useCallback(
-    async (next: TripState) => {
+    async (next: TripState, previous: TripState, onSaved?: () => void) => {
       setSaving(true);
       try {
         const response = await fetch("/api/state", {
@@ -313,13 +346,32 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
           headers: { "content-type": "application/json", "x-trip-invite": inviteToken },
           body: JSON.stringify({ state: next, revision }),
         });
-        if (!response.ok) throw new Error("save failed");
+        if (!response.ok) {
+          const failure = await response.json() as { error?: string; conflicts?: ScheduleConflict[] };
+          if (failure.conflicts?.length) setScheduleConflicts(failure.conflicts);
+          throw new Error(failure.error ?? "暫時未能同步，請稍後再試");
+        }
         const data = await response.json() as { revision?: number };
         setRevision(data.revision ?? revision + 1);
+        onSaved?.();
         toast.success("已同步給所有團友");
-      } catch {
-        toast.error("暫時未能同步，請稍後再試");
+      } catch (error) {
+        // Restore the authoritative state so rejected edits do not remain visible.
+        let restored = previous;
+        try {
+          const response = await fetch("/api/state", { headers: { "x-trip-invite": inviteToken } });
+          if (!response.ok) throw new Error("reload failed");
+          const data = await response.json() as { state?: TripState; revision?: number; demo?: boolean };
+          if (!data.state || data.demo) throw new Error("reload failed");
+          restored = normalizeState(data.state);
+          setRevision(data.revision ?? revision);
+        } catch { /* Keep the last known state if the network is unavailable. */ }
+        stateRef.current = restored;
+        setState(restored);
+        window.localStorage.setItem("trip-together-offline-state", JSON.stringify(restored));
+        toast.error(error instanceof Error ? error.message : "暫時未能同步，請稍後再試");
       } finally {
+        savingRef.current = false;
         setSaving(false);
       }
     },
@@ -327,13 +379,20 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
   );
 
   const updateState = useCallback(
-    (updater: (current: TripState) => TripState) => {
-      setState((current) => {
-        const next = updater(current);
-        window.localStorage.setItem("trip-together-offline-state", JSON.stringify(next));
-        void persist(next);
-        return next;
-      });
+    (updater: (current: TripState) => TripState, onSaved?: () => void) => {
+      if (savingRef.current) {
+        toast.warning("正在同步，請稍候再修改");
+        return false;
+      }
+      const current = stateRef.current;
+      const next = updater(current);
+      if (next === current) return false;
+      savingRef.current = true;
+      stateRef.current = next;
+      setState(next);
+      window.localStorage.setItem("trip-together-offline-state", JSON.stringify(next));
+      void persist(next, current, onSaved);
+      return true;
     },
     [persist],
   );
@@ -351,12 +410,42 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       toast.error("請輸入名字");
       return;
     }
-    updateState((current) => ({
+    if (!updateState((current) => ({
       ...current,
       members: current.members.map((member) => member.id === memberId ? { ...member, name: nameDraft.trim().slice(0, 24) } : member),
-    }));
+    }))) return;
     setIdentityOpen(false);
     toast.success("名字已更新");
+  };
+
+  const openNewMember = () => {
+    setNewMemberName("");
+    setIdentityOpen(false);
+    setNewMemberOpen(true);
+  };
+
+  const closeNewMember = () => {
+    if (savingRef.current) return;
+    setNewMemberOpen(false);
+    if (!memberId) setIdentityOpen(true);
+  };
+
+  const saveNewMember = () => {
+    try {
+      const member = createTripMember(stateRef.current.members, newMemberName, `member-${crypto.randomUUID()}`);
+      updateState((current) => ({ ...current, members: [...current.members, member] }), () => {
+        setNewMemberOpen(false);
+        setNewMemberName("");
+        if (!memberId) {
+          window.localStorage.setItem("trip-together-member", member.id);
+          setMemberId(member.id);
+          setNameDraft(member.name);
+        }
+        toast.success(`已新增團友「${member.name}」`);
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "暫時未能新增團友");
+    }
   };
 
   const castVote = useCallback(
@@ -396,15 +485,10 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       castVote(activityId, choice);
       return;
     }
-    const start = timeToMinutes(proposal.time);
-    const end = timeToMinutes(proposal.endTime);
-    const conflicts = state.itinerary.filter((item) =>
-      item.date === proposal.date &&
-      item.memberIds.includes(memberId) &&
-      timeToMinutes(item.time) < end &&
-      timeToMinutes(item.endTime) > start &&
-      item.sourceActivityId !== activityId,
-    );
+    const conflicts = findScheduleConflicts(state.itinerary.filter((item) => item.sourceActivityId !== activityId), {
+      id: proposal.publishedItineraryId ?? `vote-${activityId}`, date: proposal.date, time: proposal.time,
+      endDate: proposal.endDate, endTime: proposal.endTime, memberIds: [memberId],
+    }).map((conflict) => conflict.item);
     if (conflicts.length) {
       setPendingConflictVote({ activityId, conflicts });
       return;
@@ -417,12 +501,13 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       setIdentityOpen(true);
       return;
     }
-    if (!proposalDate || timeToMinutes(proposalEnd) <= timeToMinutes(proposalStart)) {
+    const range = { date: proposalDate, time: proposalStart, endTime: proposalEnd, endDate: proposalEndDate };
+    if (!validScheduleRange(range, state.trip)) {
       toast.error("請設定正確的活動日期及時間");
       return;
     }
     const invited = inviteSelection.length ? inviteSelection : state.members.map((member) => member.id);
-    updateState((current) => {
+    if (!updateState((current) => {
       const existing = current.proposals.some((proposal) => proposal.activityId === activity.id);
       return existing
         ? {
@@ -435,6 +520,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
                 date: proposalDate,
                 time: proposalStart,
                 endTime: proposalEnd,
+                endDate: effectiveEndDate(range),
                 status: "voting",
               } : proposal,
             ),
@@ -451,10 +537,11 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
                 date: proposalDate,
                 time: proposalStart,
                 endTime: proposalEnd,
+                endDate: effectiveEndDate(range),
               },
             ],
           };
-    });
+    })) return;
     setSelectedActivity(null);
     setSection("votes");
   };
@@ -481,6 +568,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       date: proposal.date,
       time: proposal.time,
       endTime: proposal.endTime,
+      endDate: effectiveEndDate({ date: proposal.date, time: proposal.time, endTime: proposal.endTime, endDate: proposal.endDate }),
       title: activity.title,
       place: activity.area,
       transport: activity.travel,
@@ -492,7 +580,12 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       status: "confirmed",
       tone: "coral",
     };
-    updateState((current) => ({
+    const conflicts = findScheduleConflicts(state.itinerary, publishedItem);
+    if (conflicts.length) {
+      setScheduleConflicts(conflicts);
+      return;
+    }
+    if (!updateState((current) => ({
       ...current,
       itinerary: [
         ...current.itinerary.filter((item) => item.id !== itineraryId),
@@ -503,7 +596,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
         status: "published",
         publishedItineraryId: itineraryId,
       } : item),
-    }));
+    }))) return;
     setSelectedDate(proposal.date);
     setSection("schedule");
     toast.success("活動已發布到參加者的每日行程");
@@ -524,6 +617,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
     setSelectedActivity(activity);
     setInviteSelection(state.members.map((member) => member.id));
     setProposalDate(activity.proposedDate ?? selectedDate);
+    setProposalEndDate(activity.proposedEndDate && activity.proposedEndDate !== activity.proposedDate ? activity.proposedEndDate : "");
     setProposalStart(activity.startTime ?? "09:00");
     setProposalEnd(activity.endTime ?? "11:00");
   };
@@ -555,6 +649,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       imageCredit: "團友上載",
       imageSourceUrl: "",
       proposedDate: selectedDate,
+      proposedEndDate: "",
       startTime: "09:00",
       endTime: "11:00",
       createdBy: memberId,
@@ -583,6 +678,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       imageCredit: activity.imageCredit,
       imageSourceUrl: activity.imageSourceUrl,
       proposedDate: activity.proposedDate ?? selectedDate,
+      proposedEndDate: activity.proposedEndDate && activity.proposedEndDate !== activity.proposedDate ? activity.proposedEndDate : "",
       startTime: activity.startTime ?? "09:00",
       endTime: activity.endTime ?? "11:00",
       createdBy: activity.createdBy,
@@ -620,7 +716,8 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       toast.error("請輸入活動名稱");
       return;
     }
-    if (!activityDraft.proposedDate || timeToMinutes(activityDraft.endTime) <= timeToMinutes(activityDraft.startTime)) {
+    const range = { date: activityDraft.proposedDate, time: activityDraft.startTime, endTime: activityDraft.endTime, endDate: activityDraft.proposedEndDate };
+    if (!validScheduleRange(range, state.trip)) {
       toast.error("請設定正確的活動日期及時間");
       return;
     }
@@ -667,9 +764,10 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       proposedDate: activityDraft.proposedDate,
       startTime: activityDraft.startTime,
       endTime: activityDraft.endTime,
+      proposedEndDate: effectiveEndDate(range),
       createdBy: activityDraft.createdBy ?? memberId,
     };
-    updateState((current) => ({
+    if (!updateState((current) => ({
       ...current,
       activities: [...current.activities.filter((activity) => activity.id !== nextActivity.id), nextActivity],
       proposals: current.proposals.map((proposal) => proposal.activityId === nextActivity.id && proposal.status === "voting" ? {
@@ -677,9 +775,9 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
         date: nextActivity.proposedDate,
         time: nextActivity.startTime,
         endTime: nextActivity.endTime,
+        endDate: nextActivity.proposedEndDate,
       } : proposal),
-    }));
-    if (activityPhoto && previousImage && previousImage !== image) void removeUploadedPhoto(previousImage);
+    }), () => { if (activityPhoto && previousImage && previousImage !== image) void removeUploadedPhoto(previousImage); })) return;
     resetActivityPhoto();
     setActivityDraft(null);
     toast.success(activityDraft.id ? "活動籃子項目已更新" : "活動已加入活動籃子");
@@ -695,32 +793,44 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
 
   const deleteActivity = () => {
     if (!activityDeleteTarget) return;
-    updateState((current) => ({
+    if (!updateState((current) => ({
       ...current,
       activities: current.activities.filter((activity) => activity.id !== activityDeleteTarget.id),
       proposals: current.proposals.filter((proposal) => proposal.activityId !== activityDeleteTarget.id),
-    }));
-    void removeUploadedPhoto(activityDeleteTarget.image);
+    }), () => { void removeUploadedPhoto(activityDeleteTarget.image); })) return;
     setSelectedActivity(null);
     setActivityDeleteTarget(null);
     toast.success("活動已從活動籃子刪除");
   };
 
-  const openNewItinerary = (activity?: Activity, startTime = "09:00") => {
+  const openNewItinerary = (activity?: Activity, droppedTime?: string, selectedMemberIds?: string[]) => {
     if (!memberId) {
       setIdentityOpen(true);
       return;
     }
+    const startTime = droppedTime ?? activity?.startTime ?? "09:00";
     const start = timeToMinutes(startTime);
+    const suggestedDate = activity?.proposedDate;
+    const date = !droppedTime && suggestedDate && suggestedDate >= state.trip.startDate && suggestedDate <= state.trip.endDate ? suggestedDate : selectedDate;
+    let duration = 120;
+    if (activity?.startTime && activity?.endTime) {
+      const range = { date: suggestedDate ?? date, time: activity.startTime, endTime: activity.endTime, endDate: activity.proposedEndDate };
+      const minutes = (Date.parse(`${effectiveEndDate(range)}T${range.endTime}:00Z`) - Date.parse(`${range.date}T${range.time}:00Z`)) / 60000;
+      if (minutes > 0) duration = minutes;
+    }
+    const endDate = addCalendarDays(date, Math.floor((start + duration) / 1440));
     setItineraryDraft({
+      sourceActivityId: activity?.id,
+      date,
+      endDate: endDate !== date ? endDate : "",
       title: activity?.title ?? "",
       startTime,
-      endTime: minutesToTime(start + 120),
+      endTime: minutesToTime((start + duration) % 1440),
       place: activity?.area ?? "",
       transport: activity?.travel ?? "",
       description: activity?.description ?? "",
-      contact: "",
-      memberIds: [memberId],
+      contact: activity?.sourceUrl ?? "",
+      memberIds: selectedMemberIds ?? [memberId],
       status: "optional",
       tone: activity ? "coral" : "blue",
     });
@@ -733,6 +843,9 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
     }
     setItineraryDraft({
       id: item.id,
+      sourceActivityId: item.sourceActivityId,
+      date: item.date,
+      endDate: effectiveEndDate(item) !== item.date ? effectiveEndDate(item) : "",
       title: item.title,
       startTime: item.time,
       endTime: item.endTime,
@@ -746,25 +859,37 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
     });
   };
 
-  const saveItinerary = () => {
-    if (!itineraryDraft || !memberId) return;
+  const buildItineraryItem = (): ItineraryItem | null => {
+    if (!itineraryDraft || !memberId) return null;
+    const original = state.itinerary.find((item) => item.id === itineraryDraft.id);
+    if (itineraryDraft.id && (!original || !canManageItem(original))) {
+      toast.error("你已沒有權限修改此活動");
+      return null;
+    }
     if (!itineraryDraft.title.trim()) {
       toast.error("請輸入活動名稱");
-      return;
+      return null;
     }
-    if (timeToMinutes(itineraryDraft.endTime) <= timeToMinutes(itineraryDraft.startTime)) {
-      toast.error("結束時間必須遲於開始時間");
-      return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(itineraryDraft.date) || itineraryDraft.date < state.trip.startDate || itineraryDraft.date > state.trip.endDate) {
+      toast.error("請選擇旅程範圍內的日期");
+      return null;
     }
-    if (!itineraryDraft.memberIds.length) {
+    const range = { date: itineraryDraft.date, time: itineraryDraft.startTime, endTime: itineraryDraft.endTime, endDate: itineraryDraft.endDate };
+    if (!validScheduleRange(range, state.trip)) {
+      toast.error("請設定正確的開始／結束日期及時間，並保持在旅程範圍內");
+      return null;
+    }
+    if (!itineraryDraft.id && !itineraryDraft.memberIds.length) {
       toast.error("請至少剔選一位成員");
-      return;
+      return null;
     }
-    const nextItem: ItineraryItem = {
+    return {
+      ...original,
       id: itineraryDraft.id ?? `custom-${Date.now()}`,
-      date: selectedDate,
+      date: itineraryDraft.date,
       time: itineraryDraft.startTime,
       endTime: itineraryDraft.endTime,
+      endDate: effectiveEndDate(range),
       title: itineraryDraft.title.trim(),
       place: itineraryDraft.place.trim(),
       transport: itineraryDraft.transport.trim(),
@@ -773,17 +898,49 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       memberIds: itineraryDraft.memberIds,
       status: itineraryDraft.status,
       tone: itineraryDraft.tone,
-      createdBy: memberId,
+      createdBy: original?.createdBy ?? memberId,
+      sourceActivityId: itineraryDraft.sourceActivityId,
     };
-    updateState((current) => ({
+  };
+
+  const saveItinerary = () => {
+    const nextItem = buildItineraryItem();
+    if (!nextItem) return;
+    const conflicts = findScheduleConflicts(state.itinerary, nextItem);
+    if (conflicts.length) {
+      setScheduleConflicts(conflicts);
+      return;
+    }
+    if (!updateState((current) => ({
       ...current,
       itinerary: [
         ...current.itinerary.filter((item) => item.id !== nextItem.id),
         nextItem,
       ].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time)),
-    }));
+      proposals: current.proposals.map((proposal) => proposal.publishedItineraryId === nextItem.id ? { ...proposal, date: nextItem.date, time: nextItem.time, endTime: nextItem.endTime, endDate: nextItem.endDate } : proposal),
+    }))) return;
+    setSelectedDate(nextItem.date);
+    setSection("schedule");
     setItineraryDraft(null);
-    toast.success(itineraryDraft.id ? "活動已更新" : "活動已加入行程");
+    toast.success(itineraryDraft?.id ? "活動已更新" : "活動已加入行程");
+  };
+
+  const requestReturnToBasket = () => {
+    const item = buildItineraryItem();
+    if (!item || !itineraryDraft?.id) return;
+    setReturnBasketCity(state.activities.find((activity) => activity.id === item.sourceActivityId)?.city ?? "悉尼");
+    setReturnToBasketOpen(true);
+  };
+
+  const returnToBasket = () => {
+    const item = buildItineraryItem();
+    if (!item || !memberId) return;
+    const activityId = `returned-${crypto.randomUUID()}`;
+    if (!updateState((current) => moveItineraryToBasket(current, item, returnBasketCity, memberId, activityId))) return;
+    setReturnToBasketOpen(false);
+    setItineraryDraft(null);
+    setSection("activities");
+    toast.success("活動已移回活動籃子");
   };
 
   const requestDeleteItinerary = (item: ItineraryItem) => {
@@ -796,7 +953,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
 
   const deleteItinerary = () => {
     if (!deleteTarget) return;
-    updateState((current) => ({ ...current, itinerary: current.itinerary.filter((item) => item.id !== deleteTarget.id) }));
+    if (!updateState((current) => ({ ...current, itinerary: current.itinerary.filter((item) => item.id !== deleteTarget.id) }))) return;
     setDeleteTarget(null);
     toast.success("活動已刪除");
   };
@@ -820,7 +977,8 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
           annotations: { readOnlyHint: true, untrustedContentHint: false },
           execute(input: unknown) {
             const date = (input as { date?: string })?.date;
-            return { date, items: state.itinerary.filter((item) => item.date === date) };
+            if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("請提供正確日期");
+            return { date, items: itineraryForDay(state.itinerary, date) };
           },
         },
         { signal: lifecycle.signal },
@@ -860,10 +1018,19 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
   const currentMember = state.members.find((member) => member.id === memberId);
   const dates = tripDates(state.trip.startDate, state.trip.endDate);
   const visibleMembers = memberFilter === "all" ? state.members : state.members.filter((m) => m.id === memberFilter);
-  const dayItems = state.itinerary.filter((item) => item.date === selectedDate);
+  const dayItems = itineraryForDay(state.itinerary, selectedDate);
+  const detailItinerary = state.itinerary.find((item) => item.id === detailItineraryId);
   const filteredActivities = state.activities.filter(
     (activity) => cityFilter === "全部" || activity.city === cityFilter,
   );
+  const draftScheduleConflicts = itineraryDraft ? findScheduleConflicts(state.itinerary, {
+    id: itineraryDraft.id ?? "unsaved-activity",
+    date: itineraryDraft.date,
+    time: itineraryDraft.startTime,
+    endTime: itineraryDraft.endTime,
+    endDate: itineraryDraft.endDate,
+    memberIds: itineraryDraft.memberIds,
+  }) : [];
 
   return (
     <div className="min-h-dvh bg-[#f7f8fb] text-[#172033]">
@@ -903,10 +1070,10 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
           <div className="mt-8 rounded-2xl bg-[#172033] p-4 text-white">
             <p className="text-xs font-semibold text-white/60">下一個共同活動</p>
             <p className="mt-2 text-sm font-bold">悉尼歌劇院與海港</p>
-            <p className="mt-1 text-xs text-white/65">2月20日 · 10:00</p>
+            <p className="mt-1 text-xs text-white/65">1月3日 · 10:00</p>
             <div className="mt-4 flex -space-x-2">
               {state.members.slice(0, 5).map((member) => <MemberDot key={member.id} member={member} />)}
-              <span className="grid size-7 place-items-center rounded-full border-2 border-[#172033] bg-white text-[10px] font-bold text-[#172033]">+1</span>
+              {state.members.length > 5 && <span className="grid size-7 place-items-center rounded-full border-2 border-[#172033] bg-white text-[10px] font-bold text-[#172033]">+{state.members.length - 5}</span>}
             </div>
           </div>
         </aside>
@@ -926,11 +1093,13 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
               basketOpen={basketOpen}
               onBasketOpen={setBasketOpen}
               onNewItinerary={() => openNewItinerary()}
+              onNewMember={openNewMember}
               onScheduleActivity={openNewItinerary}
               canManageActivity={canManageActivity}
               onEditActivity={openEditActivity}
               onDeleteActivity={requestDeleteActivity}
               onEditItinerary={openEditItinerary}
+              onViewItinerary={(item) => setDetailItineraryId(item.id)}
               onDeleteItinerary={requestDeleteItinerary}
               canManageItem={canManageItem}
             />
@@ -943,6 +1112,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
               inviteToken={inviteToken}
               onNew={openNewActivity}
               onSelect={openActivityDetails}
+              onScheduleActivity={openNewItinerary}
               canManageActivity={canManageActivity}
               onEdit={openEditActivity}
               onDelete={requestDeleteActivity}
@@ -966,7 +1136,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
       </nav>
 
       <Dialog open={identityOpen} onOpenChange={(open) => memberId && setIdentityOpen(open)}>
-        <DialogContent showCloseButton={Boolean(memberId)} className="max-w-md rounded-3xl p-0">
+        <DialogContent showCloseButton={Boolean(memberId)} className="max-h-[92dvh] max-w-md overflow-y-auto rounded-3xl p-0">
           <div className="identity-hero p-6 text-white">
             <div className="mb-8 flex items-center justify-between">
               <div className="brand-mark brand-mark-light"><Route size={20} /></div>
@@ -988,6 +1158,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
               </button>
             ))}
           </div>
+          <div className="px-5 pb-5"><Button variant="outline" className="h-11 w-full rounded-xl" onClick={openNewMember}><UserPlus /> 新增團友</Button></div>
           {memberId && currentMember && (
             <div className="border-t border-slate-100 px-5 pb-5 pt-4">
               <p className="mb-2 text-sm font-bold">修改我的名字</p>
@@ -997,6 +1168,17 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={newMemberOpen} onOpenChange={(open) => { if (!open) closeNewMember(); }}>
+        <DialogContent className="max-h-[92dvh] max-w-md overflow-y-auto rounded-3xl">
+          <DialogHeader><DialogTitle>新增團友</DialogTitle><DialogDescription>輸入姓名，便可加入這個旅程的團友名單。之後可選擇身份、勾選同行或發起邀請。</DialogDescription></DialogHeader>
+          <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); saveNewMember(); }}>
+            <EditorField label="團友姓名" required><input autoFocus required maxLength={24} disabled={saving} value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} className="editor-input" placeholder="輸入姓名或稱呼" /></EditorField>
+            <p className="text-xs leading-5 text-slate-500">現有活動的同行名單會保留，可另外為新團友安排行程。</p>
+            <div className="flex gap-2"><Button type="button" variant="outline" disabled={saving} className="h-11 rounded-xl" onClick={closeNewMember}>取消</Button><Button type="submit" disabled={saving || !newMemberName.trim()} className="h-11 flex-1 rounded-xl bg-[#172033] text-white hover:bg-[#26334d]"><UserPlus />{saving ? "正在新增…" : "新增團友"}</Button></div>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -1024,14 +1206,17 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
               </div>
               <div className="mx-5 my-4 rounded-2xl border border-slate-200 p-4">
                 <p className="mb-3 text-sm font-bold">建議活動時間</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <EditorField label="日期"><input type="date" min={state.trip.startDate} max={state.trip.endDate} value={proposalDate} onChange={(event) => setProposalDate(event.target.value)} className="editor-input" /></EditorField>
-                  <EditorField label="開始"><input type="time" value={proposalStart} onChange={(event) => setProposalStart(event.target.value)} className="editor-input" /></EditorField>
-                  <EditorField label="結束"><input type="time" value={proposalEnd} onChange={(event) => setProposalEnd(event.target.value)} className="editor-input" /></EditorField>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <EditorField label="開始日期"><input type="date" min={state.trip.startDate} max={state.trip.endDate} value={proposalDate} onChange={(event) => { setProposalEndDate(shiftEndDate(proposalDate, event.target.value, proposalEndDate)); setProposalDate(event.target.value); }} className="editor-input" /></EditorField>
+                  <EditorField label="開始"><input type="time" value={proposalStart} onChange={(event) => { setProposalStart(event.target.value); if (proposalEndDate === proposalDate) setProposalEndDate(""); }} className="editor-input" /></EditorField>
+                  <EditorField label="結束日期"><input type="date" min={proposalDate} max={state.trip.endDate} value={effectiveEndDate({ date: proposalDate, time: proposalStart, endTime: proposalEnd, endDate: proposalEndDate })} onChange={(event) => setProposalEndDate(event.target.value)} className="editor-input" /></EditorField>
+                  <EditorField label="結束"><input type="time" value={proposalEnd} onChange={(event) => { setProposalEnd(event.target.value); if (proposalEndDate === proposalDate) setProposalEndDate(""); }} className="editor-input" /></EditorField>
                 </div>
+                <p className="mt-2 text-xs text-slate-500">結束時間早於或等於開始時間時，預設翌日結束；也可自選結束日期。</p>
               </div>
               <div className="mx-5 my-4 rounded-2xl border border-slate-200 p-4">
-                <p className="mb-3 text-sm font-bold">邀請哪些團友？</p>
+                <p className="mb-1 text-sm font-bold">選擇哪些團友？</p>
+                <p className="mb-3 text-xs text-slate-500">直接加入會列為同行成員；發起投票則邀請以下團友。</p>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                   {state.members.map((member) => (
                     <label key={member.id} className="flex cursor-pointer items-center gap-2 text-sm">
@@ -1044,10 +1229,11 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
                   ))}
                 </div>
               </div>
-              <div className="flex gap-3 border-t border-slate-200 bg-white p-5">
+              <div className="flex flex-wrap gap-3 border-t border-slate-200 bg-white p-5">
                 {selectedActivity.sourceUrl && <Button variant="outline" className="h-12 rounded-xl" asChild><a href={selectedActivity.sourceUrl} target="_blank" rel="noreferrer">資料連結 <ExternalLink /></a></Button>}
                 {canManageActivity(selectedActivity) && <Button variant="outline" className="h-12 rounded-xl" onClick={() => { const activity = selectedActivity; setSelectedActivity(null); openEditActivity(activity); }}><Pencil /> 修改</Button>}
-                <Button className="h-12 flex-1 rounded-xl bg-[#ef6a54] text-white hover:bg-[#db5946]" onClick={() => startProposal(selectedActivity)}>
+                <Button className="h-12 min-w-[140px] flex-1 rounded-xl bg-[#172033] text-white hover:bg-[#26334d]" onClick={() => { const activity = { ...selectedActivity, proposedDate: proposalDate, proposedEndDate: effectiveEndDate({ date: proposalDate, time: proposalStart, endTime: proposalEnd, endDate: proposalEndDate }), startTime: proposalStart, endTime: proposalEnd }; setSelectedActivity(null); openNewItinerary(activity, undefined, inviteSelection); }}><Plus /> 加入行程</Button>
+                <Button variant="outline" className="h-12 min-w-[140px] flex-1 rounded-xl" onClick={() => startProposal(selectedActivity)}>
                   發起投票 <Vote />
                 </Button>
               </div>
@@ -1069,11 +1255,13 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
                 <EditorField label="分類"><input value={activityDraft.category} onChange={(event) => setActivityDraft({ ...activityDraft, category: event.target.value })} placeholder="美食、景點…" className="editor-input" /></EditorField>
                 <EditorField label="地區"><input value={activityDraft.area} onChange={(event) => setActivityDraft({ ...activityDraft, area: event.target.value })} placeholder="地點或地區" className="editor-input" /></EditorField>
               </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <EditorField label="建議日期" required><input type="date" min={state.trip.startDate} max={state.trip.endDate} value={activityDraft.proposedDate} onChange={(event) => setActivityDraft({ ...activityDraft, proposedDate: event.target.value })} className="editor-input" /></EditorField>
-                <EditorField label="開始時間" required><input type="time" value={activityDraft.startTime} onChange={(event) => setActivityDraft({ ...activityDraft, startTime: event.target.value })} className="editor-input" /></EditorField>
-                <EditorField label="結束時間" required><input type="time" value={activityDraft.endTime} onChange={(event) => setActivityDraft({ ...activityDraft, endTime: event.target.value })} className="editor-input" /></EditorField>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <EditorField label="開始日期" required><input type="date" min={state.trip.startDate} max={state.trip.endDate} value={activityDraft.proposedDate} onChange={(event) => setActivityDraft({ ...activityDraft, proposedDate: event.target.value, proposedEndDate: shiftEndDate(activityDraft.proposedDate, event.target.value, activityDraft.proposedEndDate) })} className="editor-input" /></EditorField>
+                <EditorField label="開始時間" required><input type="time" value={activityDraft.startTime} onChange={(event) => setActivityDraft({ ...activityDraft, startTime: event.target.value, proposedEndDate: activityDraft.proposedEndDate === activityDraft.proposedDate ? "" : activityDraft.proposedEndDate })} className="editor-input" /></EditorField>
+                <EditorField label="結束日期" required><input type="date" min={activityDraft.proposedDate} max={state.trip.endDate} value={effectiveEndDate({ date: activityDraft.proposedDate, time: activityDraft.startTime, endTime: activityDraft.endTime, endDate: activityDraft.proposedEndDate })} onChange={(event) => setActivityDraft({ ...activityDraft, proposedEndDate: event.target.value })} className="editor-input" /></EditorField>
+                <EditorField label="結束時間" required><input type="time" value={activityDraft.endTime} onChange={(event) => setActivityDraft({ ...activityDraft, endTime: event.target.value, proposedEndDate: activityDraft.proposedEndDate === activityDraft.proposedDate ? "" : activityDraft.proposedEndDate })} className="editor-input" /></EditorField>
               </div>
+              <p className="text-xs text-slate-500">凌晨結束會自動預設為翌日，也可選擇結束日期。</p>
               <EditorField label="相片上載">
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-3">
                   {activityPhotoPreview ? <div className="relative overflow-hidden rounded-xl"><img src={activityPhotoPreview} alt="活動相片預覽" className="h-44 w-full object-cover" /><button type="button" onClick={() => { resetActivityPhoto(); setActivityDraft({ ...activityDraft, image: "" }); }} className="absolute right-2 top-2 grid size-9 place-items-center rounded-full bg-white/90 text-slate-700 shadow"><X size={16} /></button></div> : <div className="grid h-32 place-items-center text-center text-slate-400"><div><ImagePlus className="mx-auto" /><p className="mt-2 text-sm font-semibold">JPG、PNG 或 WebP，最多 5 MB</p></div></div>}
@@ -1094,23 +1282,58 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
           </>}
         </DialogContent>
       </Dialog>
+      <Dialog open={Boolean(detailItinerary)} onOpenChange={(open) => !open && setDetailItineraryId(null)}>
+        <DialogContent className="max-h-[92dvh] max-w-xl overflow-y-auto rounded-3xl">
+          {detailItinerary && <>
+            <DialogHeader>
+              <DialogTitle>活動詳情</DialogTitle>
+              <DialogDescription>唯讀查看活動資料。{canManageItem(detailItinerary) ? "如需更改，請按「修改活動」。" : "團長及同行成員可修改此活動。"}</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <ReadOnlyField label="活動名稱" value={detailItinerary.title} />
+              <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                <ReadOnlyField label="開始日期" value={detailItinerary.date} />
+                <ReadOnlyField label="開始時間" value={detailItinerary.time} />
+                <ReadOnlyField label="結束日期" value={effectiveEndDate(detailItinerary)} />
+                <ReadOnlyField label="結束時間" value={detailItinerary.endTime} />
+              </div>
+              <ReadOnlyField label="地點" value={detailItinerary.place} />
+              <ReadOnlyField label="交通" value={detailItinerary.transport} />
+              <div className="space-y-2"><p className="text-sm font-bold text-slate-700">同行成員</p><div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-3">{detailItinerary.memberIds.length ? state.members.filter((member) => detailItinerary.memberIds.includes(member.id)).map((member) => <span key={member.id} className="inline-flex items-center gap-2 break-words text-sm font-semibold"><span className="size-3 shrink-0 rounded-full" style={{ background: member.color }} />{member.name}</span>) : <span className="text-sm text-slate-500">待選</span>}</div></div>
+              <ReadOnlyField label="描述" value={detailItinerary.description} />
+              <ReadOnlyField label="聯絡資料" value={detailItinerary.contact} />
+              <ReadOnlyField label="活動狀態" value={statusLabel(detailItinerary.status)} />
+              <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-4">
+                <Button variant="outline" className="h-11 rounded-xl" onClick={() => setDetailItineraryId(null)}>關閉</Button>
+                {canManageItem(detailItinerary) && <>
+                  <Button className="h-11 flex-1 rounded-xl bg-[#172033] text-white hover:bg-[#26334d]" onClick={() => { setDetailItineraryId(null); openEditItinerary(detailItinerary); }}><Pencil /> 修改活動</Button>
+                  <Button variant="outline" className="h-11 rounded-xl text-red-600" onClick={() => { setDetailItineraryId(null); requestDeleteItinerary(detailItinerary); }}><Trash2 /> 刪除</Button>
+                </>}
+              </div>
+            </div>
+          </>}
+        </DialogContent>
+      </Dialog>
       <Dialog open={Boolean(itineraryDraft)} onOpenChange={(open) => !open && setItineraryDraft(null)}>
         <DialogContent className="max-h-[92dvh] max-w-xl overflow-y-auto rounded-3xl">
           {itineraryDraft && <>
             <DialogHeader>
               <DialogTitle>{itineraryDraft.id ? "修改活動" : "新增活動"}</DialogTitle>
               <DialogDescription>
-                {new Date(`${selectedDate}T12:00:00Z`).toLocaleDateString("zh-HK", { month: "long", day: "numeric", weekday: "long", timeZone: "UTC" })} · 團長及已剔選的團友可修改或刪除。
+                團長及已剔選的團友可修改或刪除；可更改日期或移回活動籃子。
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <EditorField label="活動名稱" required>
                 <input value={itineraryDraft.title} onChange={(event) => setItineraryDraft({ ...itineraryDraft, title: event.target.value })} placeholder="例如：海港晚餐" className="editor-input" autoFocus />
               </EditorField>
-              <div className="grid grid-cols-2 gap-3">
-                <EditorField label="開始時間" required><input type="time" min="06:00" max="23:30" step="900" value={itineraryDraft.startTime} onChange={(event) => setItineraryDraft({ ...itineraryDraft, startTime: event.target.value })} className="editor-input" /></EditorField>
-                <EditorField label="結束時間" required><input type="time" min="06:15" max="23:59" step="900" value={itineraryDraft.endTime} onChange={(event) => setItineraryDraft({ ...itineraryDraft, endTime: event.target.value })} className="editor-input" /></EditorField>
+              <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+                <EditorField label="開始日期" required><input type="date" min={state.trip.startDate} max={state.trip.endDate} value={itineraryDraft.date} onChange={(event) => setItineraryDraft({ ...itineraryDraft, date: event.target.value, endDate: shiftEndDate(itineraryDraft.date, event.target.value, itineraryDraft.endDate) })} className="editor-input" /></EditorField>
+                <EditorField label="開始時間" required><input type="time" min="00:00" max="23:59" step="60" value={itineraryDraft.startTime} onChange={(event) => setItineraryDraft({ ...itineraryDraft, startTime: event.target.value, endDate: itineraryDraft.endDate === itineraryDraft.date ? "" : itineraryDraft.endDate })} className="editor-input" /></EditorField>
+                <EditorField label="結束日期" required><input type="date" min={itineraryDraft.date} max={state.trip.endDate} value={effectiveEndDate({ date: itineraryDraft.date, time: itineraryDraft.startTime, endTime: itineraryDraft.endTime, endDate: itineraryDraft.endDate })} onChange={(event) => setItineraryDraft({ ...itineraryDraft, endDate: event.target.value })} className="editor-input" /></EditorField>
+                <EditorField label="結束時間" required><input type="time" min="00:00" max="23:59" step="60" value={itineraryDraft.endTime} onChange={(event) => setItineraryDraft({ ...itineraryDraft, endTime: event.target.value, endDate: itineraryDraft.endDate === itineraryDraft.date ? "" : itineraryDraft.endDate })} className="editor-input" /></EditorField>
               </div>
+              <p className="text-xs leading-5 text-slate-500">結束時間早於或等於開始時間時，預設翌日結束。跨日活動會自動顯示在相關日期，修改及刪除會一併生效。</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <EditorField label="地點"><input value={itineraryDraft.place} onChange={(event) => setItineraryDraft({ ...itineraryDraft, place: event.target.value })} placeholder="集合或活動地點" className="editor-input" /></EditorField>
                 <EditorField label="交通"><input value={itineraryDraft.transport} onChange={(event) => setItineraryDraft({ ...itineraryDraft, transport: event.target.value })} placeholder="例如：的士約 15 分鐘" className="editor-input" /></EditorField>
@@ -1126,14 +1349,36 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
                   </label>)}
                 </div>
               </fieldset>
-              <Button className="h-12 w-full rounded-xl bg-[#172033] text-white hover:bg-[#26334d]" onClick={saveItinerary}><Check /> {itineraryDraft.id ? "儲存修改" : "加入行程"}</Button>
+              {draftScheduleConflicts.length > 0 && <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><p className="font-bold">同行成員已有活動，請先改日期、時間或同行者。</p><ScheduleConflictList conflicts={draftScheduleConflicts} members={state.members} /></div>}
+              <Button disabled={saving} className="h-12 w-full rounded-xl bg-[#172033] text-white hover:bg-[#26334d]" onClick={saveItinerary}><Check /> {itineraryDraft.id ? "儲存修改" : "加入行程"}</Button>
+              {itineraryDraft.id && <Button variant="outline" className="h-12 w-full rounded-xl" onClick={requestReturnToBasket}><Compass /> 移回活動籃子</Button>}
             </div>
           </>}
         </DialogContent>
       </Dialog>
+      <AlertDialog open={scheduleConflicts.length > 0} onOpenChange={(open) => !open && setScheduleConflicts([])}>
+        <AlertDialogContent className="max-h-[85dvh] overflow-y-auto rounded-3xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>同行成員的時間撞期，未能儲存</AlertDialogTitle>
+            <AlertDialogDescription>同一團友不可同時參與多個活動。請調整日期、時間或同行者，或先把原活動移回活動籃子。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <ScheduleConflictList conflicts={scheduleConflicts} members={state.members} />
+          <AlertDialogFooter><AlertDialogCancel className="rounded-xl">返回調整</AlertDialogCancel></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={returnToBasketOpen} onOpenChange={setReturnToBasketOpen}>
+        <AlertDialogContent className="rounded-3xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>把「{itineraryDraft?.title}」移回活動籃子？</AlertDialogTitle>
+            <AlertDialogDescription>會保留目前修改的內容、日期、時間、聯絡資料及原同行者名單，並從所有相關團友的每日行程移除。若此卡由投票發布，該次邀請及結果亦會撤回，可之後重新邀請。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <EditorField label="所屬城市"><select className="editor-input" value={returnBasketCity} onChange={(event) => setReturnBasketCity(event.target.value as Activity["city"])}><option>悉尼</option><option>墨爾本</option></select></EditorField>
+          <AlertDialogFooter><AlertDialogCancel className="rounded-xl">取消</AlertDialogCancel><AlertDialogAction className="rounded-xl bg-[#172033] text-white" onClick={returnToBasket}>確認移回</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent className="rounded-3xl">
-          <AlertDialogHeader><AlertDialogTitle>刪除「{deleteTarget?.title}」？</AlertDialogTitle><AlertDialogDescription>活動將從所有相關團友的時間軸移除，此操作無法復原。</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader><AlertDialogTitle>刪除「{deleteTarget?.title}」？</AlertDialogTitle><AlertDialogDescription>活動將從所有相關團友及日期的時間軸移除，跨日部分也會一併刪除，此操作無法復原。</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel className="rounded-xl">取消</AlertDialogCancel><AlertDialogAction className="rounded-xl bg-red-600 text-white hover:bg-red-700" onClick={deleteItinerary}>刪除活動</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1147,7 +1392,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
         <AlertDialogContent className="rounded-3xl">
           <AlertDialogHeader>
             <AlertDialogTitle>這個時間與你的行程撞期</AlertDialogTitle>
-            <AlertDialogDescription asChild><div>你已有：<ul className="mt-3 space-y-2">{pendingConflictVote?.conflicts.map((item) => <li key={item.id} className="rounded-xl bg-amber-50 p-3 font-semibold text-amber-900">{item.time}–{item.endTime} · {item.title}</li>)}</ul></div></AlertDialogDescription>
+            <AlertDialogDescription asChild><div>你已有：<ul className="mt-3 space-y-2">{pendingConflictVote?.conflicts.map((item) => <li key={item.id} className="rounded-xl bg-amber-50 p-3 font-semibold text-amber-900">{scheduleRangeLabel(item)} · {item.title}</li>)}</ul></div></AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel className="rounded-xl">暫不參加</AlertDialogCancel><AlertDialogAction className="rounded-xl bg-[#ef6a54] text-white hover:bg-[#db5946]" onClick={() => { if (pendingConflictVote) castVote(pendingConflictVote.activityId, "yes"); setPendingConflictVote(null); }}>仍然參加</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
@@ -1157,7 +1402,7 @@ export default function TripApp({ inviteTokenOverride }: { inviteTokenOverride?:
   );
 }
 
-function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers, dayItems, memberFilter, onMemberFilter, activities, basketOpen, onBasketOpen, onNewItinerary, onScheduleActivity, canManageActivity, onEditActivity, onDeleteActivity, onEditItinerary, onDeleteItinerary, canManageItem }: {
+function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers, dayItems, memberFilter, onMemberFilter, activities, basketOpen, onBasketOpen, onNewItinerary, onNewMember, onScheduleActivity, canManageActivity, onEditActivity, onDeleteActivity, onEditItinerary, onViewItinerary, onDeleteItinerary, canManageItem }: {
   dates: Date[];
   selectedDate: string;
   onDateChange: (value: string) => void;
@@ -1170,21 +1415,36 @@ function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers
   basketOpen: boolean;
   onBasketOpen: (value: boolean) => void;
   onNewItinerary: () => void;
+  onNewMember: () => void;
   onScheduleActivity: (activity: Activity, startTime?: string) => void;
   canManageActivity: (activity: Activity) => boolean;
   onEditActivity: (activity: Activity) => void;
   onDeleteActivity: (activity: Activity) => void;
   onEditItinerary: (item: ItineraryItem) => void;
+  onViewItinerary: (item: ItineraryItem) => void;
   onDeleteItinerary: (item: ItineraryItem) => void;
   canManageItem: (item: ItineraryItem) => boolean;
 }) {
+  const dateStripRef = useRef<HTMLDivElement>(null);
+  const activeDateRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const strip = dateStripRef.current;
+    const active = activeDateRef.current;
+    if (!strip || !active) return;
+    const offset = active.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+    strip.scrollTo({ left: Math.max(0, strip.scrollLeft + offset - 8) });
+  }, [selectedDate]);
+  const today = tripLocalDate(state.trip);
   const visibleIds = new Set(visibleMembers.map((member) => member.id));
   const visibleItems = dayItems
     .filter((item) => item.memberIds.some((id) => visibleIds.has(id)))
     .sort((a, b) => a.time.localeCompare(b.time));
-  const positionedItems = layoutTimelineItems(visibleItems);
-  const hours = Array.from({ length: 19 }, (_, index) => index + 6);
-  const canvasHeight = ((TIMELINE_END - TIMELINE_START) / 60) * HOUR_HEIGHT;
+  const startHour = Math.min(6, ...visibleItems.map((item) => Math.floor(timeToMinutes(item.time) / 60)));
+  const timelineStart = startHour * 60;
+  const positionedItems = layoutTimelineItems(visibleItems, timelineStart);
+  const existingConflicts = dayItems.flatMap((item) => findScheduleConflicts(dayItems, item).filter((conflict) => item.id < conflict.item.id).map((conflict) => ({ ...conflict, otherTitle: item.title })));
+  const hours = Array.from({ length: 25 - startHour }, (_, index) => index + startHour);
+  const canvasHeight = ((TIMELINE_END - timelineStart) / 60) * HOUR_HEIGHT;
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1192,7 +1452,7 @@ function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers
     if (!activity) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const minutesFromStart = Math.round((((event.clientY - rect.top) / HOUR_HEIGHT) * 60) / 15) * 15;
-    const start = Math.max(TIMELINE_START, Math.min(TIMELINE_START + minutesFromStart, 23 * 60 + 30));
+    const start = Math.max(timelineStart, Math.min(timelineStart + minutesFromStart, 23 * 60 + 30));
     onScheduleActivity(activity, minutesToTime(start));
   };
   return (
@@ -1200,7 +1460,7 @@ function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <p className="eyebrow">每日行程</p>
-          <h2 className="page-title">大家今日去邊度？</h2>
+          <div className="flex flex-wrap items-center gap-3"><h2 className="page-title">大家今日去邊度？</h2><Button variant="outline" size="sm" className="shrink-0 rounded-full bg-white" onClick={onNewMember}><UserPlus /> 新增團友</Button></div>
           <p className="mt-1 text-sm text-slate-500">一眼看清同行、分組與集合安排</p>
         </div>
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -1213,15 +1473,15 @@ function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers
         </div>
       </div>
 
-      <div className="date-strip mt-6">
+      <div ref={dateStripRef} className="date-strip mt-6">
         {dates.map((date) => {
           const iso = date.toISOString().slice(0, 10);
           const active = iso === selectedDate;
           return (
-            <button key={iso} type="button" className={`date-pill ${active ? "active" : ""}`} onClick={() => onDateChange(iso)}>
+            <button ref={active ? activeDateRef : undefined} key={iso} type="button" className={`date-pill ${active ? "active" : ""}`} aria-current={iso === today ? "date" : undefined} aria-pressed={active} onClick={() => onDateChange(iso)}>
               <span>{weekdayFormatter.format(date)}</span>
               <strong>{dateFormatter.format(date).replace("月", "/").replace("日", "")}</strong>
-              {iso === "2030-01-03" && <i />}
+              {iso === today && <i />}
             </button>
           );
         })}
@@ -1236,13 +1496,14 @@ function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers
           </div>
           <div className="flex items-center gap-2"><Badge variant="outline" className="hidden rounded-full border-slate-200 bg-white text-slate-600 sm:flex"><Sparkles size={13} /> 輕鬆節奏</Badge><Button size="sm" className="rounded-full bg-[#ef6a54] text-white hover:bg-[#db5946]" onClick={onNewItinerary}><Plus /> 新增</Button><Button variant="outline" size="sm" className="rounded-full" onClick={() => onBasketOpen(!basketOpen)}><PanelRightOpen /> 活動籃子</Button></div>
         </div>
+        {existingConflicts.length > 0 && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-950"><p className="font-bold">這天有團友行程撞期，請修改時間、同行者或移回活動籃子。</p><ul className="mt-2 space-y-1">{existingConflicts.map((conflict, index) => <li key={index}>{conflict.memberIds.map((id) => state.members.find((member) => member.id === id)?.name ?? id).join("、")}：「{conflict.otherTitle}」與「{conflict.item.title}」</li>)}</ul></div>}
         <div className="day-timeline" style={{ height: canvasHeight + 24 }}>
           <div className="timeline-hours" aria-hidden="true">
-            {hours.map((hour) => <div key={hour} className="timeline-hour-label" style={{ top: (hour - 6) * HOUR_HEIGHT }}><time>{hour === 24 ? "00:00" : `${String(hour).padStart(2, "0")}:00`}</time><span /></div>)}
+            {hours.map((hour) => <div key={hour} className="timeline-hour-label" style={{ top: (hour - startHour) * HOUR_HEIGHT }}><time>{`${String(hour).padStart(2, "0")}:00`}</time><span /></div>)}
           </div>
           <div className="timeline-canvas" style={{ height: canvasHeight }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDrop={handleDrop}>
             {positionedItems.map(({ item, top, height, left, width }) => <div key={item.id} className="timeline-position" style={{ top, height, left: `${left}%`, width: `${width}%` }}>
-              <TimelineCard item={item} members={state.members.filter((member) => item.memberIds.includes(member.id))} height={height} canManage={canManageItem(item)} onEdit={() => onEditItinerary(item)} onDelete={() => onDeleteItinerary(item)} />
+              <TimelineCard item={item} members={state.members.filter((member) => item.memberIds.includes(member.id))} height={height} canManage={canManageItem(item)} onOpen={() => onViewItinerary(state.itinerary.find((original) => original.id === item.id) ?? item)} onEdit={() => onEditItinerary(state.itinerary.find((original) => original.id === item.id) ?? item)} onDelete={() => onDeleteItinerary(state.itinerary.find((original) => original.id === item.id) ?? item)} />
             </div>)}
             {!positionedItems.length && <div className="timeline-empty"><CalendarDays /><p>這天尚未有活動</p><button type="button" onClick={onNewItinerary}>新增第一個活動</button></div>}
             <span className="timeline-drop-label">拖放活動到指定時間</span>
@@ -1255,22 +1516,16 @@ function ScheduleView({ dates, selectedDate, onDateChange, state, visibleMembers
   );
 }
 
-function TimelineCard({ item, members, height, canManage, onEdit, onDelete }: { item: ItineraryItem; members: TripState["members"]; height: number; canManage: boolean; onEdit: () => void; onDelete: () => void }) {
-  const compact = height < 82;
-  const roomy = height >= 126;
+function TimelineCard({ item, members, height, canManage, onOpen, onEdit, onDelete }: { item: ItineraryItem & Partial<Pick<DailyItineraryItem, "continuesFromPreviousDay" | "continuesToNextDay">>; members: TripState["members"]; height: number; canManage: boolean; onOpen: () => void; onEdit: () => void; onDelete: () => void }) {
   return (
-    <article className={`timeline-card tone-${item.tone} ${compact ? "is-compact" : ""}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0"><p className="text-xs font-bold opacity-65">{item.time}–{item.endTime}</p><h3 className={`${compact ? "mt-0.5" : "mt-1"} truncate text-sm font-bold`}>{item.title}</h3></div>
-        <div className="flex flex-none items-center gap-1">
-          {!compact && <span className="status-chip">{statusLabel(item.status)}</span>}
-          {canManage && <><button type="button" className="card-action" onClick={onEdit} aria-label={`修改 ${item.title}`}><Pencil /></button><button type="button" className="card-action card-action-delete" onClick={onDelete} aria-label={`刪除 ${item.title}`}><Trash2 /></button></>}
-        </div>
-      </div>
-      {!compact && <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs opacity-75">{item.place && <span className="flex items-center gap-1"><MapPin size={12} />{item.place}</span>}{item.transport && <span className="flex items-center gap-1"><Navigation size={12} />{item.transport}</span>}</div>}
-      {roomy && item.description && <p className="mt-2 line-clamp-2 text-xs leading-5 opacity-75">{item.description}</p>}
-      {roomy && item.contact && <p className="mt-2 flex items-center gap-1 text-xs font-semibold opacity-75"><Phone size={12} />{item.contact}</p>}
-      {!compact && <div className="mt-2 flex flex-wrap gap-1.5">{members.map((member) => <span key={member.id} className="inline-flex items-center gap-1 rounded-full bg-white/70 py-1 pl-1 pr-2 text-[10px] font-bold"><i className="size-4 rounded-full" style={{ background: member.color }} />{member.name}</span>)}</div>}
+    <article className={`timeline-card tone-${item.tone} ${height < 126 ? "is-short" : ""}`} onClick={(event) => { if (event.target === event.currentTarget) onOpen(); }}>
+      <button type="button" className="timeline-card-open" aria-label={`查看活動詳情：${item.title}`} onClick={onOpen}>
+        <span className="timeline-card-time text-xs font-bold opacity-65">{item.time}–{item.endTime}{item.continuesFromPreviousDay ? " · 續前日" : item.continuesToNextDay ? " · 續至翌日" : ""}</span>
+        <span className="timeline-card-title text-sm font-bold">{item.title}</span>
+        {(item.place || item.transport) && <span className="timeline-card-meta text-xs opacity-75">{item.place && <span><MapPin size={12} /><span className="timeline-meta-value">{item.place}</span></span>}{item.transport && <span><Navigation size={12} /><span className="timeline-meta-value">{item.transport}</span></span>}</span>}
+        <span className="timeline-card-members" aria-label="同行者">{members.length ? members.map((member) => <span key={member.id} className="timeline-member"><i style={{ background: member.color }} aria-hidden="true" /><span>{member.name}</span></span>) : <span className="text-xs opacity-65">同行者待選</span>}</span>
+      </button>
+      {canManage && <div className="timeline-card-actions"><button type="button" className="card-action" onClick={onEdit} title="修改活動" aria-label={`修改 ${item.title}`}><Pencil /></button><button type="button" className="card-action card-action-delete" onClick={onDelete} title="刪除活動" aria-label={`刪除 ${item.title}`}><Trash2 /></button></div>}
     </article>
   );
 }
@@ -1281,7 +1536,7 @@ function ActivityBasketPanel({ activities, onClose, onScheduleActivity, canManag
     <div className="space-y-3 overflow-y-auto p-3">
       {activities.map((activity) => <article key={activity.id} draggable onDragStart={(event) => { event.dataTransfer.setData("text/activity-id", activity.id); event.dataTransfer.effectAllowed = "copy"; }} className="basket-activity cursor-grab active:cursor-grabbing">
         <ActivityPhoto activity={activity} className="h-20 w-24 flex-none rounded-xl object-cover" />
-        <div className="min-w-0 flex-1"><p className="text-[11px] font-bold text-[#ef6a54]">{activity.city} · {activity.category}</p><h3 className="mt-1 line-clamp-2 text-sm font-bold">{activity.title}</h3><p className="mt-1 text-[11px] text-slate-400">{activity.proposedDate ? `${activity.proposedDate.slice(5).replace("-", "/")} · ${activity.startTime}–${activity.endTime}` : "時間待定"}</p><div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => onScheduleActivity(activity)} className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-[#ef6a54]"><Plus size={13} /> 加入行程</button>{canManageActivity(activity) && <><button type="button" onClick={() => onEditActivity(activity)} className="text-xs font-bold text-slate-500 hover:text-[#ef6a54]">修改</button><button type="button" onClick={() => onDeleteActivity(activity)} className="text-xs font-bold text-red-500 hover:text-red-700">刪除</button></>}</div></div>
+        <div className="min-w-0 flex-1"><p className="text-[11px] font-bold text-[#ef6a54]">{activity.city} · {activity.category}</p><h3 className="mt-1 line-clamp-2 text-sm font-bold">{activity.title}</h3><p className="mt-1 text-[11px] text-slate-400">{activityScheduleLabel(activity)}</p><div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => onScheduleActivity(activity)} className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-[#ef6a54]"><Plus size={13} /> 加入行程</button>{canManageActivity(activity) && <><button type="button" onClick={() => onEditActivity(activity)} className="text-xs font-bold text-slate-500 hover:text-[#ef6a54]">修改</button><button type="button" onClick={() => onDeleteActivity(activity)} className="text-xs font-bold text-red-500 hover:text-red-700">刪除</button></>}</div></div>
       </article>)}
     </div>
   </aside>;
@@ -1289,7 +1544,7 @@ function ActivityBasketPanel({ activities, onClose, onScheduleActivity, canManag
 
 type LivePlace = { id: string; name: string; address: string; latitude: number; longitude: number; category: string };
 
-function ActivitiesView({ activities, cityFilter, onCityFilter, onSelect, onNew, canManageActivity, onEdit, onDelete, inviteToken }: { activities: Activity[]; cityFilter: string; onCityFilter: (value: string) => void; onSelect: (activity: Activity) => void; onNew: () => void; canManageActivity: (activity: Activity) => boolean; onEdit: (activity: Activity) => void; onDelete: (activity: Activity) => void; inviteToken: string }) {
+function ActivitiesView({ activities, cityFilter, onCityFilter, onSelect, onNew, onScheduleActivity, canManageActivity, onEdit, onDelete, inviteToken }: { activities: Activity[]; cityFilter: string; onCityFilter: (value: string) => void; onSelect: (activity: Activity) => void; onNew: () => void; onScheduleActivity: (activity: Activity) => void; canManageActivity: (activity: Activity) => boolean; onEdit: (activity: Activity) => void; onDelete: (activity: Activity) => void; inviteToken: string }) {
   const [query, setQuery] = useState("");
   const [livePlaces, setLivePlaces] = useState<LivePlace[]>([]);
   const [searching, setSearching] = useState(false);
@@ -1317,7 +1572,7 @@ function ActivitiesView({ activities, cityFilter, onCityFilter, onSelect, onNew,
     <section>
       <p className="eyebrow">活動籃子</p>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div><h2 className="page-title">下一站想去邊？</h2><p className="mt-1 text-sm text-slate-500">收藏靈感、邀請團友，再一起投票</p></div>
+        <div><h2 className="page-title">下一站想去邊？</h2><p className="mt-1 text-sm text-slate-500">直接加入行程，或邀請團友一起投票</p></div>
         <div className="flex flex-wrap gap-2"><Button onClick={onNew} className="rounded-full bg-[#ef6a54] text-white hover:bg-[#db5946]"><Plus /> 新增活動</Button>{["全部", "悉尼", "墨爾本"].map((city) => <button key={city} className={`filter-chip ${cityFilter === city ? "active" : ""}`} onClick={() => onCityFilter(city)}>{city}</button>)}</div>
       </div>
       <div className="mt-5 rounded-[22px] border border-slate-200 bg-white p-3 shadow-[0_10px_30px_rgba(23,32,51,.04)]">
@@ -1365,10 +1620,11 @@ function ActivitiesView({ activities, cityFilter, onCityFilter, onSelect, onNew,
               <div className="p-5">
                 <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold text-[#ef6a54]">{activity.city} · {activity.area}</p><h3 className="mt-1 text-lg font-bold tracking-tight">{activity.title}</h3></div><ChevronRight className="mt-2 text-slate-300" size={20} /></div>
                 <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-500">{activity.description}</p>
-                {activity.proposedDate && <p className="mt-3 text-xs font-bold text-slate-600"><CalendarDays className="mr-1 inline" size={13} />{activity.proposedDate} · {activity.startTime}–{activity.endTime}</p>}
+                {activity.proposedDate && <p className="mt-3 text-xs font-bold text-slate-600"><CalendarDays className="mr-1 inline" size={13} />{activityScheduleLabel(activity)}</p>}
                 <div className="mt-4 flex items-center gap-3 border-t border-slate-100 pt-4 text-xs font-semibold text-slate-500"><span className="flex items-center gap-1"><Route size={13} /> {activity.walking}</span><span className="flex items-center gap-1"><Clock3 size={13} /> 即時覆核</span></div>
               </div>
             </button>
+            <div className="px-5 pb-3"><Button className="h-11 w-full rounded-xl bg-[#172033] text-white hover:bg-[#26334d]" onClick={() => onScheduleActivity(activity)}><Plus /> 加入行程</Button></div>
             <div className="activity-card-footer flex items-center justify-between gap-2 px-5 pb-4">
               {activity.imageSourceUrl ? <a className="image-credit static" href={activity.imageSourceUrl} target="_blank" rel="noreferrer">相片：{activity.imageCredit}</a> : <span className="text-[10px] text-slate-400">{activity.image ? "相片：團友上載" : "未有相片"}</span>}
               {canManageActivity(activity) && <div className="flex gap-1"><button type="button" className="card-action" onClick={() => onEdit(activity)} aria-label={`修改 ${activity.title}`}><Pencil /></button><button type="button" className="card-action card-action-delete" onClick={() => onDelete(activity)} aria-label={`刪除 ${activity.title}`}><Trash2 /></button></div>}
@@ -1396,7 +1652,7 @@ function VotesView({ state, memberId, onVote, onPublish }: { state: TripState; m
           const isInvited = Boolean(memberId && proposal.invitedIds.includes(memberId));
           return (
             <article key={proposal.activityId} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_12px_40px_rgba(23,32,51,0.05)]">
-              <div className="flex gap-4"><ActivityPhoto activity={activity} className="size-20 rounded-2xl object-cover" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-[#ef6a54]">{activity.city}</p><Badge className={proposal.status === "published" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}>{proposal.status === "published" ? "已發布" : "投票中"}</Badge></div><h3 className="mt-1 truncate text-lg font-bold">{activity.title}</h3><p className="mt-1 text-xs text-slate-500">已邀請 {proposal.invitedIds.length} 位團友</p><p className="mt-1 text-xs font-semibold text-slate-600">{proposal.date && proposal.time && proposal.endTime ? `${proposal.date} · ${proposal.time}–${proposal.endTime}` : "日期及時間待設定"}</p></div></div>
+              <div className="flex gap-4"><ActivityPhoto activity={activity} className="size-20 rounded-2xl object-cover" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-[#ef6a54]">{activity.city}</p><Badge className={proposal.status === "published" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}>{proposal.status === "published" ? "已發布" : "投票中"}</Badge></div><h3 className="mt-1 truncate text-lg font-bold">{activity.title}</h3><p className="mt-1 text-xs text-slate-500">已邀請 {proposal.invitedIds.length} 位團友</p><p className="mt-1 text-xs font-semibold text-slate-600">{proposal.date && proposal.time && proposal.endTime ? scheduleRangeLabel({ date: proposal.date, time: proposal.time, endTime: proposal.endTime, endDate: proposal.endDate }) : "日期及時間待設定"}</p></div></div>
               <div className="mt-5 grid grid-cols-3 gap-2">
                 <VoteButton disabled={!isInvited || proposal.status === "published"} active={memberId ? proposal.votes[memberId] === "yes" : false} onClick={() => onVote(activity.id, "yes")} label="參加" count={counts.yes} tone="yes" />
                 <VoteButton disabled={!isInvited || proposal.status === "published"} active={memberId ? proposal.votes[memberId] === "maybe" : false} onClick={() => onVote(activity.id, "maybe")} label="未決定" count={counts.maybe} tone="maybe" />
@@ -1441,7 +1697,15 @@ function InfoRow({ icon, label, value }: { icon: React.ReactNode; label: string;
 }
 
 function EditorField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
-  return <label className="block space-y-2 text-sm font-bold text-slate-700"><span>{label}{required && <i className="ml-1 not-italic text-[#ef6a54]">*</i>}</span>{children}</label>;
+  return <label className="block min-w-0 space-y-2 text-sm font-bold text-slate-700"><span>{label}{required && <i className="ml-1 not-italic text-[#ef6a54]">*</i>}</span>{children}</label>;
+}
+
+function ReadOnlyField({ label, value }: { label: string; value?: string }) {
+  return <div className="min-w-0 space-y-2"><p className="text-sm font-bold text-slate-700">{label}</p><div className="min-h-12 whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-white px-3 py-3 text-base leading-6 text-slate-700 [overflow-wrap:anywhere]">{value || "未填寫"}</div></div>;
+}
+
+function ScheduleConflictList({ conflicts, members }: { conflicts: ScheduleConflict[]; members: TripState["members"] }) {
+  return <ul className="mt-2 space-y-2 text-left text-sm">{conflicts.map(({ item, memberIds }, index) => <li key={`${item.id}-${index}`} className="rounded-xl bg-amber-50 p-3 text-amber-950"><p className="font-bold">{memberIds.map((id) => members.find((member) => member.id === id)?.name ?? id).join("、")}</p><p>{scheduleRangeLabel(item)}</p><p className="break-words">{item.title}</p></li>)}</ul>;
 }
 
 function LoadingScreen() {

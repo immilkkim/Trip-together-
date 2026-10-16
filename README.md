@@ -17,6 +17,20 @@ This is a trusted-group app: anyone holding a valid invitation can select any
 member identity. Member editing controls in the UI are not verified account
 authentication. D1 and R2 bindings are required for shared storage and uploads.
 
+## Accepted feature sync — 2026-10-16
+
+- Add travel members by name; select them for activities and invitations.
+- Open itinerary cards as read-only details; wrap full titles and keep participants beside the activity information.
+- Add basket activities directly to the itinerary or return scheduled activities to the basket.
+- Edit dates and times; block overlapping activities for the same member while allowing separate groups.
+- Support overnight activities with linked daily cards and cross-day conflict checks.
+- Open the first travel day before departure, today's trip-local date during travel, or the last day after the trip. The basket starts collapsed.
+- Reject stale shared-state writes using a revision check; restore the saved state after a rejected write.
+
+Run `pnpm test` for the automated regression suite and `pnpm exec tsc --noEmit` for type checking. Node 24 is recommended; the test script enables TypeScript stripping explicitly for compatible Node 22 versions.
+
+The GitHub source uses anonymized sample data. Updating this repository does not redeploy the separately hosted private trip or copy its shared database.
+
 ## Development
 
 A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
