@@ -4,8 +4,9 @@ import { tripStates } from "@/db/schema";
 import { initialTripState, type TripState } from "@/lib/trip-data";
 import { INVITE_TOKEN } from "@/lib/trip-secret";
 import { findChangedScheduleConflicts, validScheduleRange } from "@/lib/schedule-conflicts";
+import { requiresConfiguration, storageId } from "@/lib/runtime-config";
 
-const TRIP_ID = "demo-trip";
+const TRIP_ID = storageId(process.env);
 
 function authorized(request: Request) {
   return request.headers.get("x-trip-invite") === INVITE_TOKEN;
@@ -37,6 +38,9 @@ export async function GET(request: Request) {
     });
     return Response.json({ state: initialTripState, revision: 1 });
   } catch {
+    if (requiresConfiguration(process.env)) {
+      return Response.json({ error: "行程儲存服務未能使用，請稍後再試", code: "storage_unavailable" }, { status: 503 });
+    }
     return Response.json({ state: initialTripState, revision: 0, demo: true });
   }
 }
