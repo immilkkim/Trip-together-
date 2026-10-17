@@ -45,3 +45,10 @@ tsconfig.tsbuildinfo
 /.codex/
 /outputs/
 /work/
+
+# Independent account configuration and private migration snapshots.
+/wrangler.independent.json
+/backups/
+/restore/
+.dev.vars*
+*.backup.sql

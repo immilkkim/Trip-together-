@@ -12,6 +12,7 @@ const { d1, r2 } = hostingConfig;
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const managedLinux = readExecutionProfile() === "managed-linux";
+const independent = process.env.TRIP_DEPLOY_TARGET === "independent";
 
 const localBindingConfig = {
   main: "vinext/server/fetch-handler",
@@ -57,11 +58,13 @@ export default defineConfig(async () => {
     },
     plugins: [
       vinext(),
-      sites({ mockAuth: !managedLinux }),
+      ...(!independent ? [sites({ mockAuth: !managedLinux })] : []),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
-        config: localBindingConfig,
+        ...(independent
+          ? { configPath: "wrangler.independent.json" }
+          : { config: localBindingConfig }),
       }),
     ],
   };

@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trip-together-staging",
+  "main": "vinext/server/fetch-handler",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "TRIP_REQUIRE_CONFIGURATION": "true",
+    "TRIP_STORAGE_ID": "demo-trip"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "trip-together-staging",
+    "database_id": "00000000-0000-4000-8000-000000000000",
+    "migrations_dir": "drizzle"
+  }],
+  "r2_buckets": [{
+    "binding": "BUCKET",
+    "bucket_name": "trip-together-staging-photos"
+  }],
+  "observability": { "enabled": false }
+}
