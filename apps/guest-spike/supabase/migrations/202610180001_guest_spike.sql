@@ -7,6 +7,9 @@ do $$ begin
     create role tt_spike_executor nologin nosuperuser nocreatedb nocreaterole noinherit;
   end if;
 end $$;
+-- Managed Postgres admins are not superusers. ALTER FUNCTION OWNER needs SET
+-- authority for the new owner; this grant goes only to the migration operator.
+grant tt_spike_executor to current_user with set true;
 grant usage on schema tt_spike, public to tt_spike_executor;
 grant create on schema public,tt_spike to tt_spike_executor;
 

@@ -97,3 +97,15 @@ test('logout and expiration revoke guest authority',async()=>{
   await db.exec('update tt_spike.sessions set revoked_at=null,expires_at=now()-interval \'1 second\'');
   await assert.rejects(()=>create(),/SESSION_EXPIRED/);
 });
+test('migration works as a non-superuser admin without granting anon the executor role',async()=>{
+  const limited=new PGlite();
+  try {
+    await limited.exec('create role anon;create role authenticated;create role migration_admin nologin createrole;grant all on schema public to migration_admin with grant option;');
+    const database=(await limited.query('select current_database() as name')).rows[0].name;
+    await limited.exec('grant create on database "'+database.replaceAll('"','""')+'" to migration_admin;set role migration_admin;');
+    await limited.exec(await readFile(new URL('../supabase/migrations/202610180001_guest_spike.sql',import.meta.url),'utf8'));
+    await limited.exec('reset role');
+    const privileges=(await limited.query("select pg_has_role('anon','tt_spike_executor','SET') as can_set,has_function_privilege('anon','public.tt_guest_open(text)','execute') as can_open")).rows[0];
+    assert.equal(privileges.can_set,false);assert.equal(privileges.can_open,true);
+  } finally {await limited.close();}
+});
