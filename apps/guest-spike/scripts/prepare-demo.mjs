@@ -1,0 +1,10 @@
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+const trip=randomUUID();
+const token=randomBytes(32).toString('hex');
+const hash=createHash('sha256').update(token).digest('hex');
+const members=Array.from({length:6},(_,i)=>`('${randomUUID()}','${trip}','團友${i+1}',${i===0})`).join(',\n');
+const sql=`-- Private generated test seed. Never commit. Apply only to the isolated spike project.\nbegin;\ninsert into tt_spike.trips(id,name,start_date,end_date,time_zone) values('${trip}','獨立版示範旅程','2030-01-01','2030-01-11','Australia/Sydney');\ninsert into tt_spike.members(id,trip_id,name,is_leader) values\n${members};\ninsert into tt_spike.invites(trip_id,token_hash,expires_at) values('${trip}','${hash}',now()+interval '30 days');\ncommit;\n`;
+await writeFile('demo-seed.local.sql',sql,{mode:0o600});
+await writeFile('invite-code.local.txt',token+'\n',{mode:0o600});
+console.log('已產生 demo-seed.local.sql 及 invite-code.local.txt。只在獨立測試專案執行 SQL；邀請碼不要提交 GitHub。');
