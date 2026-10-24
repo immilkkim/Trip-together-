@@ -18,15 +18,22 @@
 
 2026-10-19 更新：非 superuser 管理角色測試發現 `ALTER FUNCTION OWNER` 需要 executor 的 SET ROLE 授權，已只向 migration 操作者補上該授權。新增回歸測試確認 anon 只有狹窄 RPC execute，沒有 executor 的 SET ROLE 權限。這不取代真正遠端 Supabase 驗證。
 
+## 2026-10-24 接手狀態
+
+- Cloudflare Pages 已以 commit `c539895c774bc514c6588b49658c2287ac2ff0fa` 成功完成 Next.js build、TypeScript 檢查、靜態輸出及 Pages 發布；現有成功部署保持不動。
+- 已建立 `validation/step1-remote` 驗收分支，新增 `npm run test:live-step1`。它一次驗證：A 邀請／選 member／guest credential、B 新增後重新由 Supabase 讀取、C 兩個 guest session 互見資料、D 同一 participant 的兩條並行撞期只有一條成功且失敗不留下 partial event。
+- 遠端 Step 1 A–D **尚未標記為通過**。只有真正對獨立 `trip-together-dev` 執行驗收後，才可把下列遠端項目改為 PASS。
+- 驗收腳本只接受 publishable／anon key；明確拒絕 secret/service-role key，不輸出 invitation 或 guest credential。私人 invitation 只可從本機／受保護 runtime 環境提供，不可提交 GitHub。
+
 ## 尚未完成，不能視為通過
 
-- 沒有連接使用者 Supabase／Cloudflare 帳戶，沒有建立資源、執行遠端 migration、啟用付費或產生新網址。
+- 尚未完成 `trip-together-dev` 的實際 PostgREST A–D 遠端驗收；本地 PGlite 結果不能取代這一步。
 - PGlite 是單連線 PostgreSQL WASM；已執行交易 SQL，不能代替 Supabase 真正雙連線競爭測試。
-- `scripts/test-live-race.mjs` 已準備，尚未對遠端執行。
-- 尚未測試實際 PostgREST gateway、雲端管理角色權限、RPC schema cache／限流、公開 key 與訪客 body 的遠端傳輸。
-- 未做瀏覽器或手機畫面 QA；本環境缺少指定瀏覽器檢查能力，未啟動預覽或替代瀏覽器。iPhone／Android、分享邀請、前景更新與手機時間欄位仍待驗收。
+- `scripts/test-live-race.mjs` 與較完整的 `scripts/test-live-step1.mjs` 已準備；後者應優先作 Step 1 驗收。
+- 尚未以遠端結果確認實際 PostgREST gateway、RPC schema cache／限流、公開 key 與訪客 body 的傳輸，以及 Supabase 管理角色實況。
+- 未完成手機真機畫面 QA；iPhone／Android、分享邀請、前景更新與手機時間欄位仍待驗收。
 - 這不是完整功能重建完成；未做籃子／投票／相片、正式資料匯入或真帳戶。
 
 ## 下一步
 
-擁有者建立獨立 Supabase Free 測試專案，依 README 套用 migration、生成私人示範 seed、填公開專案設定；部署獨立 Pages 測試網址後做遠端競爭及兩手機驗收。保持原六人版及其資料不變，驗收後才擴展功能。
+在獨立 `trip-together-dev` 使用受保護環境提供私人測試 invitation，執行 `npm run test:live-step1`。只有 A–D 全部 PASS 後才合併驗收分支；之後再做兩個實際 browser session／手機 UI 驗收，然後進入 Step 2 功能移植。不要把 invitation、database password、service-role／secret key 放進 GitHub、公開 workflow 或對話內容。
