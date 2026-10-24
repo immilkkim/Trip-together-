@@ -18,7 +18,15 @@ const requestedDate = process.env.TT_TEST_DATE;
 if (allowWrite !== 'yes' || !url || !key || !invite) {
   throw Error('只限獨立測試專案：需設定 TT_ALLOW_TEST_WRITE=yes、TT_TEST_INVITE 及公開 Supabase API 設定。');
 }
-if (key.startsWith('sb_secret_') || /service_role/i.test(key)) {
+if (!/^https:\/\/[^/]+\.supabase\.co\/?$/.test(url)) {
+  throw Error('拒絕非 Supabase HTTPS URL。');
+}
+let publicKey = key.startsWith('sb_publishable_');
+if (!publicKey && key.split('.').length === 3) {
+  try { publicKey = JSON.parse(Buffer.from(key.split('.')[1], 'base64url').toString()).role === 'anon'; }
+  catch {}
+}
+if (!publicKey) {
   throw Error('拒絕使用 secret/service-role key；此驗收只可使用 publishable/anon key。');
 }
 
