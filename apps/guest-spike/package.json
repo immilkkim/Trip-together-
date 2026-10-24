@@ -11,6 +11,7 @@
     "test": "node --experimental-strip-types --test tests/domain.test.mjs tests/config.test.mjs",
     "test:db": "node --test tests/database.test.mjs",
     "test:live-race": "node scripts/test-live-race.mjs",
+    "test:live-step1": "node scripts/test-live-step1.mjs",
     "seed:prepare": "node scripts/prepare-demo.mjs"
   },
   "dependencies": { "next": "16.3.4", "react": "19.2.6", "react-dom": "19.2.6" },
