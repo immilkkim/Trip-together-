@@ -1,159 +1,112 @@
 # Trip Together｜同行行程
 
-手機優先的多人旅行 PWA。團友可查看各自每日時間軸、從活動籃子發起邀請與投票，並由團長確認共同活動。
+Trip Together 是一個手機優先的多人旅行規劃 PWA。可信任的小團體可以共用每日行程、活動籃子、邀請／投票、同行成員與相片，並以 revision 機制避免多人同時修改時靜默覆蓋資料。
 
-公開版本使用虛構姓名及 2030 年 1 月 1–11 日的示範行程。
+> **Source of truth**
+>
+> - `main` 是目前 repository 的 accepted public checkpoint，使用匿名示範資料。
+> - 目前獨立 Cloudflare deployment 的程式來源仍是 `migration/independent-cloudflare`；它在 `main` 基礎上加入獨立 Workers 部署、嚴格 runtime configuration 與資料還原工具。
+> - 兩者的核心 UI、D1/R2 資料路徑與業務規則相同，但尚未完全合併。詳見 [Project Status](docs/PROJECT_STATUS.md)。
 
-## Public source edition
+## Current Architecture
 
-This snapshot includes the activity basket, photo uploads, invitations, voting,
-conflict reminders, leader publication, member name editing, and daily timeline.
-It does not contain the private Site invitation token, production database,
-uploaded photos, deployment project ID, or private Git history.
+```text
+Browser / PWA
+    |
+    v
+React 19 + Next.js 16 App Router
+    |
+    +--> /api/state --------> Drizzle ORM --------> Cloudflare D1
+    +--> /api/uploads ----------------------------> Cloudflare R2
+    +--> /api/places -----------------------------> OpenStreetMap Nominatim
+```
 
-The local demo invitation path is `/join/local-demo-invite`. Configure
-`TRIP_INVITE_TOKEN` with a private value before deploying your own copy.
-This is a trusted-group app: anyone holding a valid invitation can select any
-member identity. Member editing controls in the UI are not verified account
-authentication. D1 and R2 bindings are required for shared storage and uploads.
+主要畫面「每日行程／活動籃子／投票與邀請」不是三個 Next.js routes；它們由 `components/trip-app.tsx` 在同一個 React app 內以 state 切換。
 
-## Accepted feature sync — 2026-10-16
+## Tech Stack
 
-- Add travel members by name; select them for activities and invitations.
-- Open itinerary cards as read-only details; wrap full titles and keep participants beside the activity information.
-- Add basket activities directly to the itinerary or return scheduled activities to the basket.
-- Edit dates and times; block overlapping activities for the same member while allowing separate groups.
-- Support overnight activities with linked daily cards and cross-day conflict checks.
-- Open the first travel day before departure, today's trip-local date during travel, or the last day after the trip. The basket starts collapsed.
-- Reject stale shared-state writes using a revision check; restore the saved state after a rejected write.
+| Layer | Current technology |
+| --- | --- |
+| UI | React 19, TypeScript, Tailwind CSS, shadcn-style UI components |
+| Framework | Next.js 16 App Router |
+| Build/runtime adapter | Vinext + Vite |
+| Backend | Next.js Route Handlers |
+| ORM | Drizzle ORM |
+| Shared database | Cloudflare D1 (SQLite) |
+| File storage | Cloudflare R2 |
+| Hosting | Cloudflare Workers for the current independent deployment |
+| PWA | Web App Manifest + service worker |
 
-Run `pnpm test` for the automated regression suite and `pnpm exec tsc --noEmit` for type checking. Node 24 is recommended; the test script enables TypeScript stripping explicitly for compatible Node 22 versions.
+Supabase is **not** part of the current architecture. A separate Supabase guest-mode spike exists only as historical/experimental work; see [Architecture](docs/ARCHITECTURE.md#historical--experimental-architecture).
 
-The GitHub source uses anonymized sample data. Updating this repository does not redeploy the separately hosted private trip or copy its shared database.
+## Core Capabilities
 
-## Development
+- Daily timeline with split-group activities and overnight events.
+- Activity basket with add/edit/delete and optional photo upload.
+- Invitation and voting flow, with leader publication to the itinerary.
+- Member selection, member creation and display-name editing.
+- Same-member schedule conflict checks while allowing parallel sub-groups.
+- Whole-trip shared state with optimistic UI and revision-based stale-write protection.
+- Basic offline read fallback using browser cache/localStorage; offline writes are not queued.
+- Australia-focused place search through a server-side Nominatim proxy.
 
-A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
+## Repository Map
 
-## Prerequisites
+```text
+app/                    Next.js pages and Route Handlers
+components/             Trip UI and reusable UI components
+lib/                    Trip domain types and business rules
+db/                     Drizzle D1 client and schema
+drizzle/                SQL migrations and Drizzle metadata
+public/                  PWA assets and service worker
+scripts/                 Local build/runtime helpers
+tests/                   Domain regression tests
+docs/                    Architecture, status, development and security docs
+.openai/hosting.json     D1/R2 binding names for Sites/local tooling
+```
+
+## Quick Start
+
+Requirements:
 
 - Node.js `>=22.13.0`
-- Portable: Windows, macOS, or Linux; no Bash required
-- Managed Linux: managed Linux runtime with Bash, `flock`, `curl`, `sha256sum`, and GNU `timeout`
-- Git is required only for publishing
+- pnpm `11.25.0` (declared by `packageManager`)
+- Git
 
-## Sites Lifecycle
-
-The Sites initializer copies the shared starter and selects managed-linux only when `SITES_MANAGED_LINUX_CONTAINER=1`; otherwise it selects portable. It saves the selection only in ignored `.sites-runtime/execution-profile.json`. Both profiles copy/configure first, then use the plugin's separate `install-dependencies.mjs` step to measure installation independently. Edit source under `app/` and follow the Sites skill for installation, preview, builds, and publishing.
-
-Whenever reopening or moving a checkout, run `node <plugin-root>/scripts/configure-execution-profile.mjs` before project commands. Profile changes do not alter tracked source or require reinstalling otherwise-valid dependencies; restart an existing preview to use the new selection. Do not commit or upload `.sites-runtime/`.
-
-This starter does not use `wrangler.jsonc`.
-
-`install:ci` runs `npm ci` once against the shared lockfile, disables parent-workspace discovery, and includes required dev/optional dependencies despite production/omit settings. Sharp defaults to prebuilt binaries unless explicitly configured otherwise. Do not overlap installers.
-
-- **Portable:** Preserve host HOME, npm cache, registry, proxy, temporary paths, retry/concurrency settings, and lifecycle-script policy. Use `--prefer-offline --no-audit --no-fund`.
-- **Managed Linux:** Use the existing project-local HOME/cache/tmp setup and Linux install lock, tarball preflight, and timeout. Restore the image-seeded npm cache only when its lockfile hash matches; retain network fallback. Builds keep their existing timeout. These helpers are not invoked by the portable profile.
-
-`scripts/sites-env.mjs` preserves the caller's HOME, npm cache, proxy, XDG, and temporary-directory configuration while defaulting Wrangler and Miniflare state to the checkout. If npm reports an unwritable cache, select a writable path with `npm_config_cache` for that install. The `dev` and `start` scripts also keep Wrangler logs inside the checkout. Generated `.sites-runtime/` and `.wrangler/` directories are disposable and ignored by Git.
-
-On portable, `npm run dev` uses `vinext dev` with HMR, starting at port 5173. Vinext records the running server in ignored `.vinext/` state, rejects an ordinary duplicate launch, and recovers stale state after a stopped process; exactly simultaneous starts can race. Pass `--port <port>` or `--hostname <host>` after `npm run dev --` when needed; keep portable previews on loopback.
-
-For browser QA on managed Linux, use `sites-preview start`. The project's dev script runs Vite and accepts the supervisor's `--host 0.0.0.0 --port 4173 --strictPort` arguments. The internal browser uses `http://terminal.local:4173/`; it is not a user-facing URL. The supervisor owns the preview lifecycle. The ignored local profile survives the supervisor's cleared process environment.
-
-The portable profile simulates ChatGPT sign-in only for loopback development requests. Visit `/signin-with-chatgpt?return_to=/` to sign in as `local_seedy` (`seedy@sites.test`, display name `Seedy`) and `/signout-with-chatgpt?return_to=/` to sign out. The development cookie preserves that identity across server restarts. Mock auth is disabled in the managed-linux profile and is not included in production builds; hosted authentication remains dispatch-owned.
-
-The Worker uses `vinext/server/fetch-handler`, including Vinext's config-aware image handling. After building, `npm start` runs that Worker locally through Wrangler on `127.0.0.1`, sharing `.wrangler/state` with dev preview and local D1 migrations; it does not deploy the site or simulate sign-in. Use the URL printed by the server. Pass `npm start -- --port <port>` to select a different built-preview port.
-
-Local previews use Miniflare's placeholder `Request.cf` metadata without a network lookup. Set `CLOUDFLARE_CF_FETCH_ENABLED=true` to opt into fetching preview metadata; this setting does not change hosted request metadata.
-
-Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=true` to opt in.
-
-## Included Shape
-
-- edit site code under `app/`
-- `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
-- `@cloudflare/workers-types` provides Worker types; `cloudflare-env.d.ts` declares optional `DB`/`BUCKET` bindings—update these declarations if binding names change
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Use it as the durable user key; use email and name for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive `oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty `name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by `oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+git clone https://github.com/immilkkim/Trip-together-.git
+cd Trip-together-
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+The public source contains anonymous demo data. For local demo access, use the local invite path configured by the source edition; never reuse a production invitation token.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs optional or required ChatGPT sign-in:
+Common checks:
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use the returned `userId` as the stable user key for user-owned records; do not use email as a durable identifier.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send anonymous visitors through Sign in with ChatGPT.
-- In a Server Component, start sign-in with `<a href={chatGPTSignInPath(returnTo)} target="_top">`. The auth helper module is server-only; do not import it into a Client Component.
-- Do not use `fetch`, XHR, a client-side router, or a framework link that can prefetch the sign-in route. SIWC must start as a top-level navigation.
-- Never request the AuthAPI authorization endpoint directly. The dispatch-owned `/signin-with-chatgpt` route must start the SIWC flow.
-- Use `chatGPTSignOutPath(returnTo)` for browser sign-out links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the OAuth cookies, and identity header injection. Do not implement app routes for those reserved paths. Routes that do not import and call the helper remain anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the Sites hosting platform's access policy controls for workspace-wide restrictions, or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Local D1 migrations
-
-For a D1-backed local preview, generate SQL with `npm run db:generate`. Build once through the Sites skill's build entrypoint (or `npm run build` for standalone use) to generate `dist/server/wrangler.json`, rebuilding if bindings change. From the project root, apply each pending migration in order:
-
-```sh
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_example.sql
+```bash
+pnpm test
+pnpm exec tsc --noEmit
+pnpm lint
+pnpm build
 ```
 
-Replace the filename with the pending migration and `DB` with your D1 binding name if different. Use `.wrangler/state`, not `.wrangler/state/v3`; Wrangler adds the versioned directories. Do not replay migrations already applied locally. This updates only the preview database; publishing applies production migrations separately.
+For D1 migrations, local Worker preview, independent Cloudflare deployment and branch workflow, read [Development](docs/DEVELOPMENT.md).
 
-## Diagnostic Commands
+## Security Model in One Paragraph
 
-- `npm run install:ci`: perform the one locked dependency install
-- `npm run dev`: start the Vite/Vinext development server
-- `npm run build`: build the deployable Sites artifact
-- `npm run start`: preview the built Worker locally with D1/R2 support
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+Trip Together currently uses a **trusted-group invitation model**, not user authentication. A valid private invite token permits access to the shared trip; the browser then lets the holder select a member identity. The API verifies the invite token and protects shared writes with revision, schedule-range and conflict checks, but individual member/leader permissions are primarily enforced in the client UI rather than by a server-side account identity. Read [Security](docs/SECURITY.md) before changing access control.
 
-When using the Sites plugin, follow its skill instructions for installation, builds, and publishing. These npm commands remain available for standalone use.
+## Documentation
 
-The portable build runs Vinext directly without a host `timeout` command. The managed-linux build uses `scripts/build-verified.sh` and its existing `SITES_BUILD_TIMEOUT` setting.
+- [Architecture](docs/ARCHITECTURE.md) — how the system is connected and how data flows.
+- [Project Status](docs/PROJECT_STATUS.md) — current checkpoint, deployment state, limits and priority.
+- [Development](docs/DEVELOPMENT.md) — rebuild a development environment, test, migrate and deploy.
+- [Database](docs/DATABASE.md) — D1 schema, TripState payload, revision/concurrency and storage boundaries.
+- [Security](docs/SECURITY.md) — invitation model, trust boundary, safeguards and known limitations.
+- [Changelog](docs/CHANGELOG.md) — major architecture and product milestones.
 
-## Learn More
+## Public Source vs Private Runtime Data
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+This repository is public and intentionally contains demo data only. Do not commit production trip data, invitation tokens, Cloudflare credentials, private exports, database dumps or uploaded photos. The live D1/R2 data and Worker secrets are operational resources outside the public source tree.
