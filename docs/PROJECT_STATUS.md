@@ -1,26 +1,28 @@
 # PROJECT_STATUS.md
 
 **Purpose:** Give a new ChatGPT/Codex session or developer an immediate, evidence-based view of what is stable, what is deployed and what should be worked on next.  
-**Current status:** Independent six-person Trip Together is deployed and accepted for mobile use; source/deployment branches are not yet reconciled.  
+**Current status:** Independent six-person Trip Together is deployed and accepted for mobile invitation/state access; source/deployment branches are not yet reconciled.  
 **Last verified:** 2026-10-25
 
 ## Current stable state
 
-Trip Together's accepted full product flow is working with:
+The accepted full application source currently implements:
 
 - daily schedule timeline;
 - split-group and overnight activities;
 - activity basket;
-- activity add/edit/delete and photo upload;
+- activity add/edit/delete and photo upload flow;
 - member creation and display-name editing;
 - invitation and voting flow;
 - leader publication of voted activities;
 - same-member conflict prevention;
 - revision-based stale-write protection;
 - PWA shell/offline read fallback;
-- independent Cloudflare Workers + D1 + R2 deployment.
+- Cloudflare D1/R2 persistence path.
 
-The private 2027 trip state has been migrated from the previous hosted Site into the independent D1-backed deployment and was manually accepted on mobile. Private trip content is intentionally not stored in this public repository.
+The full UI has been deployed independently on Cloudflare Workers. The private 2027 trip state has been migrated from the previous hosted Site into the independent D1-backed deployment, and invitation/state access was manually accepted on mobile. Private trip content is intentionally not stored in this public repository.
+
+Not every feature was re-exercised during this documentation audit; deployment smoke checks still required after branch reconciliation are listed below.
 
 ## Current checkpoint
 
@@ -68,7 +70,7 @@ Therefore:
 
 - Create/edit/delete basket items.
 - Optional source links, descriptions, travel information and walking level.
-- JPG/PNG/WebP upload through R2.
+- JPG/PNG/WebP upload path through R2.
 - Direct scheduling from a basket item.
 
 ### Invitations and voting
@@ -106,6 +108,15 @@ The reconciliation must preserve:
 - the public/demo data boundary;
 - Workers Builds behavior that points the live app at the intended private storage row.
 
+## Unfinished items in current scope
+
+1. Merge/reconcile the independent deployment/runtime changes into `main` without touching private production data.
+2. Re-run automated tests, TypeScript, lint and production/independent build checks on the reconciled source.
+3. Re-run multi-device stale-write/concurrency and R2 upload/read/delete smoke tests after the deployment source changes.
+4. Preserve the private backup/restore safeguards from the migration branch when `main` becomes deployment-capable.
+
+These are the current handover items. Broader product ideas are intentionally not promoted into the active roadmap.
+
 ## Known limitations / technical debt
 
 These are verified design or implementation limitations, not necessarily active user-facing bugs.
@@ -134,7 +145,7 @@ Do not convert old Supabase spike acceptance items into current bugs. Draft PRs 
 | --- | --- | --- | --- | --- |
 | Public source on `main` | Anonymous 2030 demo TripState | Local demo fallback exists in source | Sites/local-tool-compatible Vinext/Vite | Safe for public repository; not equivalent to current live independent deployment. |
 | Local development | Local D1/R2 simulation after migration/setup | Developer-controlled local token; never use production secret | Vinext/Vite + Cloudflare local tooling | Browser localStorage is origin-specific. |
-| Current independent deployment | Private real trip state in D1; uploaded objects in R2 | Worker secret + strict runtime configuration | Cloudflare Workers | Built from `migration/independent-cloudflare`, not `main`. |
+| Current independent deployment | Private real trip state in D1; uploaded objects use R2 | Worker secret + strict runtime configuration | Cloudflare Workers | Built from `migration/independent-cloudflare`, not `main`. |
 | Supabase guest spike | Synthetic/test data only | Separate bounded guest-token experiment | Static Next.js + Supabase test architecture | Historical/experimental; not current production. |
 
 ## Paused / historical directions
